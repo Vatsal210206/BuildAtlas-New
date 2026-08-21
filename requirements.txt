@@ -6,3 +6,4 @@ google-generativeai
 openai
 Pillow
 opencv-python-headless
+joblib
