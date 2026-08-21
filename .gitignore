@@ -1,0 +1,26 @@
+venv/
+.venv/
+.vscode/
+
+frontend/node_modules/
+frontend/dist/
+
+__pycache__/
+*.pyc
+
+streamlit_stdout.log
+streamlit_stderr.log
+
+mongodb/
+mongodb.zip
+
+buildAtlas.py
+buildAtlas1 (1).py
+new_visualizer.py
+train_model1.py
+.streamlit/secrets.toml
+.env
+.venv/
+project.zip
+hackathon_original.py
+.streamlit/secrets.toml
