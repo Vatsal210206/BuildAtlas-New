@@ -1,8 +1,0 @@
-streamlit
-pandas
-numpy
-plotly
-google-generativeai
-openai
-Pillow
-opencv-python-headless

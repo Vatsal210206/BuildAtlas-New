@@ -510,10 +510,12 @@ st.markdown(f"""
 .chat-you {{
   background: rgba(244,162,97,0.08); border: 1px solid rgba(244,162,97,0.2);
   border-radius: 14px; padding: 14px 18px; margin: 8px 0;
+    color: #e8edf5;
 }}
 .chat-ai {{
   background: rgba(42,157,143,0.08); border: 1px solid rgba(42,157,143,0.2);
   border-radius: 14px; padding: 14px 18px; margin: 8px 0;
+    color: #e8edf5;
 }}
 .chat-label {{ font-family: 'Orbitron', monospace; font-size: 9px; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 6px; font-weight: 700; }}
 .chat-label-you {{ color: var(--accent); }}
@@ -1542,32 +1544,37 @@ def chatbot():
         st.session_state.chat_history = []
 
     # Chat display
-    st.markdown('<div class="ba-card" style="min-height:300px;max-height:500px;overflow-y:auto;">', unsafe_allow_html=True)
+    chat_content = []
     if not st.session_state.chat_history:
-        st.markdown("""
+        chat_content.append("""
         <div style="text-align:center;padding:40px;color:#5a7090;">
           <div style="font-size:3rem;margin-bottom:12px;">🤖</div>
           <div style="font-family:'Syne',sans-serif;font-size:16px;font-weight:600;color:#dde8f5;">Ask me anything about construction</div>
           <div style="font-size:13px;margin-top:6px;">Material costs · Safety · Project planning · Regulations</div>
         </div>
-        """, unsafe_allow_html=True)
+        """.strip())
     else:
         for role, msg in st.session_state.chat_history:
             if role == "You":
-                st.markdown(f"""
+                chat_content.append(f"""
                 <div class="chat-you">
                   <div class="chat-label chat-label-you">YOU</div>
-                  <div style="font-size:14px;line-height:1.5;">{msg}</div>
+                  <div style="font-size:14px;line-height:1.5;color:#e8edf5;font-weight:500;">{msg}</div>
                 </div>
-                """, unsafe_allow_html=True)
+                """.strip())
             else:
-                st.markdown(f"""
+                chat_content.append(f"""
                 <div class="chat-ai">
                   <div class="chat-label chat-label-ai">BUILDATLAS AI</div>
-                  <div style="font-size:14px;line-height:1.6;">{msg}</div>
+                                    <div style="font-size:14px;line-height:1.6;color:#e8edf5;font-weight:500;">{msg}</div>
                 </div>
-                """, unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
+                """.strip())
+    st.markdown(
+        '<div class="ba-card" style="min-height:300px;max-height:500px;overflow-y:auto;">'
+        + "".join(chat_content)
+        + '</div>',
+        unsafe_allow_html=True,
+    )
 
     # Input row
     col_input, col_btn, col_clear = st.columns([5, 1, 1])

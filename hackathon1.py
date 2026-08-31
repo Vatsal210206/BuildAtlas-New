@@ -20,6 +20,14 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import re
 import os
+from pathlib import Path
+import hashlib
+import hmac
+import secrets
+import uuid
+import smtplib
+from email.message import EmailMessage
+from importlib import import_module
 import google.generativeai as genai
 import streamlit.components.v1 as components
 import joblib
@@ -28,6 +36,16 @@ from enum import Enum
 from floorplan_engine import LayoutSolver, calculate_vastu_score, calculate_cost, render_professional_floorplan
 import traceback
 from concept_generator.ui_flow import concept_layout_generator_page
+from dotenv import load_dotenv
+load_dotenv(dotenv_path=Path(__file__).resolve().with_name(".env"), override=False)
+
+try:
+    _email_validator = import_module("email_validator")
+    EmailNotValidError = _email_validator.EmailNotValidError
+    validate_email = _email_validator.validate_email
+except ImportError:
+    EmailNotValidError = ValueError
+    validate_email = None
 # ─────────────────────────────────────────────
 # BUILDER DATABASE (TEMP)
 # ─────────────────────────────────────────────
@@ -404,6 +422,21 @@ st.markdown(f"""
   box-shadow: 0 12px 40px rgba(244,162,97,0.6) !important;
 }}
 
+.metric-card {{
+  background: linear-gradient(145deg, var(--card), var(--card2)) !important;
+  border: 2px solid var(--border) !important; border-radius: 16px !important;
+  padding: 18px 20px !important; box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+}}
+.metric-label {{
+  font-family: 'Orbitron', monospace !important; font-size: 11px !important;
+  letter-spacing: 1.5px !important; text-transform: uppercase !important;
+  color: #f2c28d !important; margin-bottom: 8px !important; font-weight: 700 !important;
+}}
+.metric-value {{
+  font-family: 'Bebas Neue', sans-serif !important; font-size: 22px !important;
+  font-weight: 900 !important; color: #f8f9fa !important; letter-spacing: 0.5px;
+}}
+
 .stTextInput > div > div > input,
 .stNumberInput > div > div > input,
 .stTextArea textarea {{
@@ -510,10 +543,12 @@ st.markdown(f"""
 .chat-you {{
   background: rgba(244,162,97,0.08); border: 1px solid rgba(244,162,97,0.2);
   border-radius: 14px; padding: 14px 18px; margin: 8px 0;
+    color: #f8f9fa;
 }}
 .chat-ai {{
   background: rgba(42,157,143,0.08); border: 1px solid rgba(42,157,143,0.2);
   border-radius: 14px; padding: 14px 18px; margin: 8px 0;
+    color: #f8f9fa;
 }}
 .chat-label {{ font-family: 'Orbitron', monospace; font-size: 9px; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 6px; font-weight: 700; }}
 .chat-label-you {{ color: var(--accent); }}
@@ -542,6 +577,133 @@ st.markdown(f"""
 .sidebar-current-page-text {{
   font-family: 'Exo 2', sans-serif; font-size: 13px; font-weight: 700; color: var(--text);
   line-height: 1.3; letter-spacing: 0.02em;
+}}
+
+/* ── SHARED PRODUCT POLISH ── */
+:root {{
+    --space-1: 0.35rem;
+    --space-2: 0.65rem;
+    --space-3: 1rem;
+    --space-4: 1.5rem;
+    --space-5: 2rem;
+    --radius-sm: 10px;
+    --radius-md: 14px;
+    --radius-lg: 18px;
+    --surface-raised: rgba(26,35,56,0.78);
+    --text-secondary: #b0c9e3;
+}}
+
+.main .block-container {{
+    max-width: 1440px;
+    padding: 2.25rem clamp(1rem, 3vw, 3.5rem) 4rem;
+}}
+.main-header {{
+    font-size: 3.2rem !important;
+    line-height: 1 !important;
+    margin: 0 0 var(--space-2) !important;
+    letter-spacing: 0 !important;
+}}
+.sub-header {{
+    margin: 0 0 var(--space-5) !important;
+    letter-spacing: 2.5px !important;
+    line-height: 1.5 !important;
+}}
+h2, h3 {{
+    color: var(--text) !important;
+    font-family: 'Exo 2', sans-serif !important;
+    letter-spacing: 0 !important;
+    line-height: 1.25 !important;
+    margin: var(--space-4) 0 var(--space-2) !important;
+}}
+h2 {{ font-size: 1.45rem !important; }}
+h3 {{ font-size: 1.15rem !important; }}
+[data-testid="stMarkdownContainer"] p {{
+    color: var(--text-secondary);
+    line-height: 1.6;
+}}
+.ba-card, [data-testid="metric-container"], .metric-card, .weather-card {{
+    border-radius: var(--radius-lg) !important;
+    border-width: 1px !important;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.28) !important;
+}}
+.ba-card {{ padding: var(--space-4) !important; margin: var(--space-3) 0 !important; }}
+.ba-card-title {{
+    font-size: 1.05rem !important;
+    letter-spacing: 0.8px !important;
+    margin-bottom: var(--space-3) !important;
+    padding-bottom: var(--space-2) !important;
+}}
+.metric-card {{ min-height: 108px; padding: var(--space-3) !important; }}
+.metric-label {{ font-size: 10px !important; line-height: 1.35 !important; }}
+.metric-value {{ font-size: 1.45rem !important; line-height: 1.15 !important; }}
+[data-testid="metric-container"] {{ padding: var(--space-3) !important; }}
+[data-testid="stMetricValue"] {{ font-size: 2.2rem !important; line-height: 1.05 !important; }}
+.stButton > button {{
+    min-height: 42px !important;
+    border-radius: var(--radius-md) !important;
+    padding: 0.65rem 1rem !important;
+    letter-spacing: 1px !important;
+    box-shadow: 0 5px 16px rgba(244,162,97,0.2) !important;
+}}
+.stButton > button:hover {{ transform: translateY(-1px) !important; }}
+.stTextInput > div > div > input,
+.stNumberInput > div > div > input,
+.stTextArea textarea,
+.stSelectbox > div > div,
+.stMultiSelect > div > div {{
+    min-height: 42px !important;
+    border-radius: var(--radius-sm) !important;
+    border-width: 1px !important;
+}}
+.stTextInput > div > div > input:focus,
+.stNumberInput > div > div > input:focus,
+.stTextArea textarea:focus {{
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 0 1px var(--accent), 0 0 16px rgba(244,162,97,0.16) !important;
+}}
+[data-testid="stAlert"] {{
+    border-radius: var(--radius-md) !important;
+    border-width: 1px !important;
+    padding: 0.75rem 1rem !important;
+}}
+[data-testid="stSidebar"] {{ padding: 0.75rem 0.6rem !important; }}
+[data-testid="stSidebar"] .block-container {{ padding-top: 1rem !important; }}
+.sidebar-logo {{ padding: 1.25rem !important; margin-bottom: 1rem !important; border-radius: var(--radius-lg) !important; }}
+.sidebar-current-page {{ margin-bottom: 1rem; border-radius: var(--radius-md); }}
+.sidebar-section-label {{ margin: 1rem 0 0.5rem !important; }}
+div[data-testid="stSidebar"] .stButton > button {{
+    margin: 0.25rem 0 !important;
+    min-height: 38px !important;
+    padding: 0.55rem 0.75rem !important;
+    border-radius: var(--radius-sm) !important;
+    font-size: 10px !important;
+    box-shadow: none !important;
+}}
+.stTabs [data-baseweb="tab-list"] {{
+    border-radius: var(--radius-md) !important;
+    padding: 0.35rem !important;
+    gap: 0.35rem !important;
+}}
+.stTabs [role="tab"] {{ min-height: 38px !important; padding: 0.6rem 0.85rem !important; border-radius: var(--radius-sm) !important; }}
+[data-testid="stForm"] {{ border-radius: var(--radius-md) !important; padding: var(--space-4) !important; }}
+.stSpinner > div {{ border-top-color: var(--accent) !important; }}
+
+@media (max-width: 900px) {{
+    .main .block-container {{ padding: 1.5rem 1rem 3rem; }}
+    .main-header {{ font-size: 2.35rem !important; }}
+    .sub-header {{ font-size: 11px !important; letter-spacing: 1.8px !important; }}
+    .metric-card {{ min-height: 96px; }}
+    .metric-value {{ font-size: 1.2rem !important; }}
+    [data-testid="stMetricValue"] {{ font-size: 1.8rem !important; }}
+}}
+@media (max-width: 640px) {{
+    .main .block-container {{ padding: 1rem 0.75rem 2rem; }}
+    .main-header {{ font-size: 2rem !important; }}
+    .ba-card {{ padding: 1rem !important; border-radius: var(--radius-md) !important; }}
+    .ba-card-title {{ font-size: 0.95rem !important; }}
+    .stButton > button {{ width: 100%; }}
+    .stTabs [data-baseweb="tab-list"] {{ flex-wrap: nowrap !important; overflow-x: auto !important; }}
+    .stTabs [role="tab"] {{ flex: 0 0 auto; }}
 }}
 
 .hero-section {{
@@ -699,6 +861,14 @@ div[data-testid="stHorizontalBlock"] .stButton > button:hover {{
   border: 2px solid var(--border) !important; border-radius: 12px !important;
   color: var(--text) !important;
 }}
+.stSelectbox [data-baseweb="select"] div,
+.stSelectbox [data-baseweb="select"] span,
+.stSelectbox [data-baseweb="select"] input {{
+  color: #f8f9fa !important;
+}}
+.stSelectbox [data-baseweb="select"] [class*="placeholder"] {{
+  color: #b0c9e3 !important;
+}}
 .stSelectbox label, .stMultiSelect label, .stRadio label, .stCheckbox label {{
   color: var(--accent3) !important; font-family: 'Orbitron', monospace !important;
   font-size: 12px !important; letter-spacing: 2px !important; text-transform: uppercase !important;
@@ -774,6 +944,10 @@ div[data-testid="stHorizontalBlock"] .stButton > button:hover {{
   padding: 10px 14px !important; margin-right: 8px !important;
   cursor: pointer; transition: all 0.2s;
 }}
+.stRadio > div[role="radiogroup"] > label p,
+.stRadio > div[role="radiogroup"] > label div {{
+  color: #f8f9fa !important;
+}}
 .stRadio > div[role="radiogroup"] > label:hover {{
   border-color: rgba(244,162,97,0.5) !important;
   box-shadow: 0 0 10px rgba(244,162,97,0.15) !important;
@@ -808,9 +982,9 @@ div[data-testid="stHorizontalBlock"] .stButton > button:hover {{
 # ─────────────────────────────────────────────
 # API KEYS
 # ─────────────────────────────────────────────
-OCR_API_KEY       = "K85020740388957"
-WEATHER_API_KEY   = "89d0e9d14175126ac1f38863eca25f53"
-CHATBOT_API_KEY   = "AIzaSyASinuqMwlm1j3aWplfmtRAxDwP9v088_s"
+OCR_API_KEY       = os.getenv("OCR_API_KEY", "")
+WEATHER_API_KEY   = os.getenv("WEATHER_API_KEY", "")
+CHATBOT_API_KEY   = os.getenv("GEMINI_API_KEY", "")
 
 # ─────────────────────────────────────────────
 # PLOTLY DARK THEME HELPER
@@ -900,6 +1074,7 @@ def ocr_with_api(image_file):
         img_byte_arr = io.BytesIO()
         preprocessed_image.save(img_byte_arr, format='PNG')
         image_bytes = img_byte_arr.getvalue()
+        import os
         
         # Azure Vision API configuration
         endpoint = "https://atsu.cognitiveservices.azure.com/" 
@@ -1132,8 +1307,41 @@ def extract_bill_data(ocr_text):
 # ─────────────────────────────────────────────
 # WEATHER API
 # ─────────────────────────────────────────────
+@st.cache_data(ttl=86400, show_spinner=False)
+def geocode_indian_city(city):
+    """Resolve an Indian city to coordinates using the public Nominatim API."""
+    normalized_city = city.strip().title()
+    if not normalized_city:
+        return None, "not_found"
+
+    try:
+        response = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={
+                "q": f"{normalized_city}, India",
+                "format": "jsonv2",
+                "addressdetails": 1,
+                "countrycodes": "in",
+                "limit": 1,
+            },
+            headers={"User-Agent": "BuildAtlas-cost-predictor/1.0"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        results = response.json()
+    except (requests.RequestException, ValueError, TypeError):
+        return None, "unavailable"
+
+    if not results:
+        return None, "not_found"
+    try:
+        return (float(results[0]["lat"]), float(results[0]["lon"])), None
+    except (KeyError, TypeError, ValueError):
+        return None, "unavailable"
+
+
 def get_real_weather_data(city):
-    api_key = "89d0e9d14175126ac1f38863eca25f53"
+    api_key = WEATHER_API_KEY
     try:
         url = f"http://api.openweathermap.org/data/2.5/forecast?q={city}&appid={api_key}&units=metric"
         response = requests.get(url, timeout=10)
@@ -1286,17 +1494,31 @@ def cost_prediction():
 
         return model.predict(input_df)[0]
 
-    # 🔥 UI (THIS WAS MISSING)
+    # Cost input and prediction features must match train_model1.py.
     size = st.number_input("Area (sqm)", value=1000)
     floors = st.number_input("Floors", value=2)
     project_type = st.selectbox("Project Type", ["Residential", "Commercial", "Industrial"])
-    location = st.selectbox("City", ["Delhi", "Mumbai", "Bangalore", "Hyderabad", "Pune"])
+    location = st.text_input(
+        "Enter your city",
+        value="Mumbai",
+        placeholder="Delhi, Ghaziabad, Jaipur, Lucknow, Pune, Bengaluru, Mumbai",
+    ).strip().title()
     if st.button("Predict Cost"):
+        coordinates, geocode_error = geocode_indian_city(location)
+        if geocode_error == "not_found":
+            st.error("City could not be located. Please enter a valid Indian city.")
+            return
+        if geocode_error == "unavailable" or coordinates is None:
+            st.error("Location service is temporarily unavailable. Please try again.")
+            return
+
+        latitude, longitude = coordinates
         input_data = pd.DataFrame({
             "size": [size],
             "floors": [floors],
             "project_type": [project_type],
-            "city": [location]
+            "latitude": [latitude],
+            "longitude": [longitude],
         })
         # ✅ Add SAME feature engineering as training
         input_data["size_per_floor"] = input_data["size"] / input_data["floors"]
@@ -1305,6 +1527,7 @@ def cost_prediction():
   
         base_cost = model.predict(input_data)[0]
         total_cost = base_cost * 1.1
+        update_current_project("estimated_cost", float(total_cost))
         st.success("Prediction complete ✅")
 
         benchmark_line = ""
@@ -1513,11 +1736,15 @@ def weather_alerts():
 def is_construction_query(query):
     construction_keywords = [
         "cement", "concrete", "brick", "steel", "tmt", "sand",
-        "construction", "building", "foundation", "roof",
+        "construction", "construct", "build", "building", "house", "villa",
+        "apartment", "duplex", "plot", "sqft", "square feet", "area",
+        "foundation", "roof",
         "beam", "column", "plaster", "flooring", "tiles",
         "architecture", "site", "contractor", "labour",
         "cost", "estimate", "material", "project",
-        "safety", "equipment", "excavation"
+        "safety", "equipment", "excavation", "timeline", "duration",
+        "how long", "how much time", "budget", "design", "floor plan",
+        "layout", "renovate", "renovation", "permit", "vastu"
     ]
 
     query = query.lower()
@@ -1535,7 +1762,10 @@ def chatbot():
     st.markdown('<h1 class="main-header">🤖 AI Construction Assistant</h1>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">Gemini-powered construction intelligence</p>', unsafe_allow_html=True)
 
-    genai.configure(api_key="AIzaSyASinuqMwlm1j3aWplfmtRAxDwP9v088_s")
+    if not CHATBOT_API_KEY:
+        st.error("Gemini is not configured. Set GEMINI_API_KEY before using the AI chatbot.")
+        return
+    genai.configure(api_key=CHATBOT_API_KEY)
     model = genai.GenerativeModel('gemini-2.5-flash')
 
     if "chat_history" not in st.session_state:
@@ -1557,14 +1787,14 @@ def chatbot():
                 st.markdown(f"""
                 <div class="chat-you">
                   <div class="chat-label chat-label-you">YOU</div>
-                  <div style="font-size:14px;line-height:1.5;">{msg}</div>
+                                    <div style="font-size:14px;line-height:1.5;color:#f8f9fa;font-weight:500;">{msg}</div>
                 </div>
                 """, unsafe_allow_html=True)
             else:
                 st.markdown(f"""
                 <div class="chat-ai">
                   <div class="chat-label chat-label-ai">BUILDATLAS AI</div>
-                  <div style="font-size:14px;line-height:1.6;">{msg}</div>
+                                    <div style="font-size:14px;line-height:1.6;color:#f8f9fa;font-weight:500;">{msg}</div>
                 </div>
                 """, unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
@@ -1588,7 +1818,10 @@ def chatbot():
                 else:
                     prompt = f"""
                     You are BuildAtlas AI, a construction domain expert.
-                    Only answer queries related to construction, materials, cost estimation, safety, and project planning.
+                    Answer questions related to construction, home-building, architecture,
+                    materials, cost estimation, safety, permits, design, timelines, and
+                    project planning. If a question is unrelated to construction or these
+                    related planning topics, politely say that it is outside your domain.
 
                     User Query: {user_input}
                     """
@@ -1877,7 +2110,7 @@ def builder_marketplace():
                     st.markdown(total_html, unsafe_allow_html=True)
 
         # 🔘 BUTTON (BOTTOM)
-        button_col1, button_col2 = st.columns([1, 1])
+        button_col1, button_col2, button_col3 = st.columns([1, 1, 1])
         
         with button_col1:
             if st.button(f"📋 View Details", key=f"details_{builder['id']}", use_container_width=True):
@@ -1890,11 +2123,32 @@ def builder_marketplace():
                     st.session_state["selected_builder"] = builder
                     st.session_state["selected_package"] = selected_package
                     st.session_state["estimated_cost"] = grand_total if (builder_only or materials_only or complete_package) else 0
+                    update_current_project("selected_builder", builder)
                     st.success(f"✅ {selected_package} selected with {builder['name']}")
                 else:
                     st.warning("⚠️ Please select a package first")
+
+        with button_col3:
+            if st.button("📋 Request Quote", key=f"quote_{builder['id']}", type="primary", use_container_width=True):
+                st.session_state["quote_builder"] = builder
+                st.rerun()
         
         st.markdown('<div class="ba-divider"></div>', unsafe_allow_html=True)
+    confirmation = st.session_state.pop("quote_confirmation", None)
+    if confirmation:
+        st.success(f"Quote request sent successfully to {confirmation['builder_name']}.")
+        st.markdown(
+            f'<div class="ba-card"><div style="color:#dde8f5;line-height:1.9;">'
+            f'Request ID: <strong>{confirmation["request_id"]}</strong><br>'
+            'The builder can now review your project requirements and respond through BuildAtlas.</div></div>',
+            unsafe_allow_html=True,
+        )
+        if st.button("View My Quote Requests", key="view_my_quote_requests", use_container_width=True):
+            st.session_state["active_page"] = "📋  Requests / Quotations"
+            st.rerun()
+
+    if st.session_state.get("quote_builder") and get_current_role() == ROLE_CUSTOMER:
+        _render_quote_request_form()
 def vastu_page():
     st.markdown('<h1 class="main-header">🧭 Vastu Intelligence</h1>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">AI-powered Vastu compliance & planning</p>', unsafe_allow_html=True)
@@ -2654,6 +2908,7 @@ def material_marketplace():
                             # Check if material already saved
                             if material_key not in [f"{m['category']}_{m['name']}_{m['brand']}" for m in st.session_state.saved_materials]:
                                 st.session_state.saved_materials.append(material)
+                                add_project_item("materials", material.to_dict(), "name")
                                 st.success(f"✅ {material['name']} saved!", icon="✨")
                             else:
                                 st.info(f"Already saved: {material['name']}", icon="ℹ️")
@@ -3317,6 +3572,8 @@ Classification guide:
             completed_percentage += weight
         
         completed_percentage = min(completed_percentage, 95)
+        if get_current_role() == "CUSTOMER":
+            update_current_project("progress", round(completed_percentage, 1))
         
         # Cost and materials consumed
         current_cost_used = (estimated_cost * 100000) * (completed_percentage / 100)
@@ -3572,8 +3829,1741 @@ Classification guide:
             )
 
 
+def get_current_project():
+    """Return the current session-only customer project workspace."""
+    project = st.session_state.setdefault(
+        "current_project",
+        {
+            "name": "New Home Construction",
+            "selected_builder": None,
+            "service_providers": [],
+            "materials": [],
+            "estimated_cost": None,
+            "progress": 0,
+        },
+    )
+    project.setdefault("name", "New Home Construction")
+    project.setdefault("selected_builder", None)
+    project.setdefault("service_providers", [])
+    project.setdefault("materials", [])
+    project.setdefault("estimated_cost", None)
+    project.setdefault("progress", 0)
+    return project
+
+
+def update_current_project(field, value):
+    """Update one field in the current session-only customer project."""
+    get_current_project()[field] = value
+
+
+QUOTE_STATUSES = ("New", "Viewed", "Contacted", "Quote Received", "Accepted", "Rejected", "Completed")
+
+
+def _quote_requests_path():
+    return Path(__file__).resolve().with_name("buildatlas_quote_requests.json")
+
+
+def _load_quote_requests():
+    path = _quote_requests_path()
+    if not path.exists():
+        path.write_text("[]\n", encoding="utf-8")
+        return []
+    try:
+        with path.open("r", encoding="utf-8") as file:
+            data = json.load(file)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Quote request storage is unreadable: {path}") from exc
+    if not isinstance(data, list):
+        raise RuntimeError(f"Quote request storage is invalid: {path}")
+    return [request for request in data if isinstance(request, dict)]
+
+
+def _save_quote_requests(requests):
+    with _quote_requests_path().open("w", encoding="utf-8") as file:
+        json.dump(requests, file, indent=2)
+        file.write("\n")
+
+
+def _quote_requests():
+    return _load_quote_requests()
+
+
+def _create_quote_request(data):
+    requests = _quote_requests()
+    request_id = f"BA-QT-{uuid.uuid4().hex[:8].upper()}"
+    while any(request.get("request_id") == request_id for request in requests):
+        request_id = f"BA-QT-{uuid.uuid4().hex[:8].upper()}"
+    timestamp = datetime.now().isoformat(timespec="seconds")
+    request = {
+        "request_id": request_id,
+        **data,
+        "status": "New",
+        "created_at": timestamp,
+        "updated_at": timestamp,
+    }
+    requests.append(request)
+    _save_quote_requests(requests)
+    return request
+
+
+def _current_account():
+    email = st.session_state.get("authenticated_account", "")
+    return next((account for account in _accounts() if account.get("email") == email), {})
+
+
+def _current_customer_id():
+    return st.session_state.get("authenticated_account") or st.session_state.get("customer_email", "")
+
+
+def _current_builder_ids():
+    account = _current_account()
+    identity = account.get("email") or st.session_state.get("authenticated_account", "")
+    profile = account.get("profile", {})
+    names = {
+        str(profile.get("full_name", "")).strip().lower(),
+        str(st.session_state.get("builder_name", "")).strip().lower(),
+        str(st.session_state.get("builder_company", "")).strip().lower(),
+    }
+    builder_ids = {identity, f"account:{identity}"} if identity else set()
+    for builder in builders:
+        builder_name = str(builder.get("name", "")).strip().lower()
+        if builder_name and builder_name in names:
+            builder_ids.add(f"marketplace:{builder.get('id')}")
+    return builder_ids
+
+
+RAZORPAY_AMOUNT_PAISE = 50000
+
+
+def _razorpay_client():
+    key_id = os.getenv("RAZORPAY_KEY_ID", "").strip()
+    key_secret = os.getenv("RAZORPAY_KEY_SECRET", "").strip()
+    if not key_id or not key_secret:
+        return None, "Razorpay test credentials are not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET."
+    try:
+        import razorpay
+    except ImportError:
+        return None, "Razorpay SDK is unavailable. Install the razorpay package before subscribing."
+    return razorpay.Client(auth=(key_id, key_secret)), None
+
+
+def _create_razorpay_order(account):
+    client, error = _razorpay_client()
+    if error:
+        return None, error
+    try:
+        order = client.order.create({
+            "amount": RAZORPAY_AMOUNT_PAISE,
+            "currency": "INR",
+            "receipt": f"ba_{hashlib.sha256(account.get('email', '').encode()).hexdigest()[:20]}_{int(time.time())}",
+            "notes": {"purpose": "BuildAtlas Builder Pro monthly subscription"},
+        })
+    except Exception:
+        return None, "Unable to create the Razorpay test order. Please try again."
+    return order, None
+
+
+def _persist_builder_subscription(account, subscription):
+    persisted_accounts = _load_persisted_accounts()
+    for persisted_account in persisted_accounts:
+        if (
+            isinstance(persisted_account, dict)
+            and persisted_account.get("email") == account.get("email")
+        ):
+            persisted_account["subscription"] = subscription
+            _save_persisted_accounts(persisted_accounts)
+            account["subscription"] = subscription
+            return True
+    return False
+
+
+def _verify_razorpay_callback(account):
+    payment_id = st.query_params.get("razorpay_payment_id")
+    order_id = st.query_params.get("razorpay_order_id")
+    signature = st.query_params.get("razorpay_signature")
+    if not all((payment_id, order_id, signature)):
+        return None
+
+    pending_order = st.session_state.get("razorpay_pending_order", {})
+    if pending_order.get("builder_email") != account.get("email") or pending_order.get("order_id") != order_id:
+        st.error("Razorpay payment verification failed. The order does not match this builder session.")
+        st.query_params.clear()
+        return False
+
+    client, error = _razorpay_client()
+    if error:
+        st.error("Razorpay payment verification is unavailable. Check the test-mode configuration.")
+        st.query_params.clear()
+        return False
+
+    try:
+        client.utility.verify_payment_signature({
+            "razorpay_order_id": order_id,
+            "razorpay_payment_id": payment_id,
+            "razorpay_signature": signature,
+        })
+        payment = client.payment.fetch(payment_id)
+        if (
+            payment.get("order_id") != order_id
+            or payment.get("amount") != RAZORPAY_AMOUNT_PAISE
+            or payment.get("currency") != "INR"
+            or payment.get("status") not in {"authorized", "captured"}
+        ):
+            raise ValueError("Payment details did not match the subscription order")
+    except Exception:
+        st.error("Razorpay payment verification failed. The subscription was not activated.")
+        st.query_params.clear()
+        return False
+
+    started_at = datetime.now()
+    subscription = {
+        "plan": "Builder Pro",
+        "status": "active",
+        "amount": 500,
+        "currency": "INR",
+        "started_at": started_at.isoformat(timespec="seconds"),
+        "next_billing_date": (started_at + timedelta(days=30)).date().isoformat(),
+        "razorpay_order_id": order_id,
+        "razorpay_payment_id": payment_id,
+    }
+    if not _persist_builder_subscription(account, subscription):
+        st.error("Payment verified, but the builder subscription could not be saved.")
+        st.query_params.clear()
+        return False
+    st.session_state.pop("razorpay_pending_order", None)
+    st.query_params.clear()
+    return True
+
+
+def _razorpay_checkout(order):
+    key_id = os.getenv("RAZORPAY_KEY_ID", "").strip()
+    checkout_config = json.dumps({
+        "key": key_id,
+        "amount": RAZORPAY_AMOUNT_PAISE,
+        "currency": "INR",
+        "name": "BuildAtlas",
+        "description": "Builder Pro monthly subscription",
+        "order_id": order["id"],
+        "handler": True,
+    })
+    order_id = json.dumps(order["id"])
+    return f"""
+    <script src=\"https://checkout.razorpay.com/v1/checkout.js\"></script>
+    <script>
+      const config = {checkout_config};
+      config.handler = function (response) {{
+        const params = new URLSearchParams(window.parent.location.search);
+        params.set('razorpay_payment_id', response.razorpay_payment_id);
+        params.set('razorpay_order_id', response.razorpay_order_id);
+        params.set('razorpay_signature', response.razorpay_signature);
+        window.parent.location.href = window.parent.location.pathname + '?' + params.toString();
+      }};
+      config.modal = {{ ondismiss: function () {{ window.parent.location.reload(); }} }};
+      new Razorpay(config).open();
+    </script>
+    """
+
+
+@st.dialog("Request a Quote")
+def _render_quote_request_form():
+    builder = st.session_state.get("quote_builder")
+    if not builder:
+        return
+    if get_current_role() != ROLE_CUSTOMER or not st.session_state.get("authenticated"):
+        st.error("Please log in as a customer before requesting a quote.")
+        return
+    customer_account = _current_account()
+    profile = customer_account.get("profile", {})
+    st.markdown(f"### 📋 Request a Quote from {builder.get('name', 'Builder')}")
+    st.markdown(
+        f'<div class="ba-card"><div class="ba-card-title">🏗️ Selected Builder</div>'
+        f'<div style="color:#dde8f5;line-height:1.9;">{builder.get("name", "Builder")}<br>'
+        f'📍 {builder.get("location", "")}</div></div>',
+        unsafe_allow_html=True,
+    )
+    with st.form(f"quote_request_form_{builder.get('id')}"):
+        st.markdown("#### Customer Information")
+        customer_name = st.text_input("Full Name *", value=profile.get("full_name", st.session_state.get("customer_name", "")))
+        customer_email = st.text_input("Email *", value=customer_account.get("email", st.session_state.get("customer_email", "")))
+        customer_phone = st.text_input("Phone Number *", value=customer_account.get("phone", st.session_state.get("customer_phone", "")))
+        st.markdown("#### Project Information")
+        project_city = st.text_input("Project City *", placeholder="Where will the project be built?")
+        property_type = st.selectbox("Property Type *", ["Residential", "Commercial"])
+        construction_area = st.number_input("Plot / Construction Area (sq.ft.) *", min_value=0.0, value=0.0, step=100.0)
+        floors = st.number_input("Number of Floors *", min_value=0, value=0, step=1)
+        estimated_budget = st.number_input("Estimated Budget (₹)", min_value=0.0, value=0.0, step=100000.0)
+        expected_start_date = st.date_input("Expected Start Date", value=datetime.now().date())
+        requirements = st.text_area("Project Requirements / Additional Notes", placeholder="Describe your construction requirements")
+        submitted = st.form_submit_button("📋 Send Quote Request", type="primary", use_container_width=True)
+
+    if st.button("Cancel", key=f"cancel_quote_{builder.get('id')}", use_container_width=True):
+        st.session_state.pop("quote_builder", None)
+        st.rerun()
+
+    if not submitted:
+        return
+    errors = []
+    if not customer_name.strip():
+        errors.append("Customer name is required.")
+    if not _valid_email(customer_email):
+        errors.append("Enter a valid email address.")
+    if not _valid_phone(customer_phone.strip()):
+        errors.append("Enter a valid 10-digit Indian phone number.")
+    if not project_city.strip():
+        errors.append("Project city is required.")
+    if construction_area <= 0:
+        errors.append("Construction area must be greater than zero.")
+    if floors < 1:
+        errors.append("Number of floors must be at least one.")
+    if errors:
+        for error in errors:
+            st.error(error)
+        return
+
+    guard_key = f"{_current_customer_id()}:{builder.get('id')}:{project_city.strip().lower()}:{construction_area}:{floors}"
+    if st.session_state.get("quote_submission_guard") == guard_key:
+        st.warning("This quote request was already submitted.")
+        return
+    request = _create_quote_request({
+        "builder_id": f"marketplace:{builder.get('id')}",
+        "builder_name": builder.get("name", ""),
+        "builder_city": builder.get("location", ""),
+        "customer_id": _current_customer_id(),
+        "customer_name": customer_name.strip(),
+        "customer_email": customer_email.strip().lower(),
+        "customer_phone": customer_phone.strip(),
+        "project_city": project_city.strip(),
+        "property_type": property_type,
+        "construction_area": float(construction_area),
+        "floors": int(floors),
+        "estimated_budget": float(estimated_budget),
+        "expected_start_date": expected_start_date.isoformat(),
+        "requirements": requirements.strip(),
+    })
+    st.session_state["quote_submission_guard"] = guard_key
+    st.session_state["last_quote_request_id"] = request["request_id"]
+    st.session_state["quote_confirmation"] = request
+    st.session_state["quote_builder"] = None
+    st.rerun()
+
+
+def add_project_item(field, item, identifier):
+    """Add a selected builder, provider, or material once to the project."""
+    project = get_current_project()
+    items = project[field]
+    if not any(existing.get(identifier) == item.get(identifier) for existing in items):
+        items.append(item)
+
+
+def customer_dashboard():
+    """Render the customer overview without changing existing feature pages."""
+    st.markdown('<h1 class="main-header">🏠 Customer Dashboard</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Your construction journey at a glance</p>', unsafe_allow_html=True)
+
+    customer_name = st.session_state.get("customer_name", "Customer")
+    project = get_current_project()
+    st.session_state.setdefault("customer_project_name", project["name"])
+    project_name = st.text_input("Current project", key="customer_project_name")
+    if project_name.strip() and project_name != project["name"]:
+        project["name"] = project_name.strip()
+
+    selected_builder = project.get("selected_builder")
+    builder_name = selected_builder.get("name", "Not selected") if selected_builder else "Not selected"
+    provider_names = [provider.get("name", "Unknown") for provider in project["service_providers"]]
+    material_names = [material.get("name", "Unknown") for material in project["materials"]]
+    estimated_cost = project.get("estimated_cost")
+    budget_value = f"₹{estimated_cost / 10000000:.2f} Cr" if isinstance(estimated_cost, (int, float)) else "Not estimated"
+    pending_requests = sum(
+        request.get("status") not in {"Completed", "Accepted"}
+        for request in _quote_requests()
+        if request.get("customer_id") == _current_customer_id()
+    )
+
+    st.markdown(
+        f'<div class="ba-card"><div class="ba-card-title">Welcome, {customer_name}</div>'
+        '<div style="color:#b0c9e3;font-size:14px;line-height:1.6;">'
+        f'Project: <strong>{project["name"]}</strong><br>'
+        'Plan your project, compare trusted partners, and keep every construction milestone in view.'
+        '</div></div>',
+        unsafe_allow_html=True,
+    )
+
+    summary_cols = st.columns(4)
+    summary = [
+        ("🏗️ Selected Builder", builder_name, "Current project"),
+        ("💰 Estimated Budget", budget_value, "From Cost Prediction"),
+        ("📊 Current Progress", f"{project['progress']}%", "Project tracker"),
+        ("📋 Pending Requests", str(pending_requests), "Quotes and enquiries"),
+    ]
+    for column, (label, value, detail) in zip(summary_cols, summary):
+        with column:
+            st.markdown(
+                f'<div class="metric-card"><div class="metric-label">{label}</div>'
+                f'<div class="metric-value">{value}</div>'
+                f'<div style="color:#b0c9e3;font-size:11px;margin-top:6px;">{detail}</div></div>',
+                unsafe_allow_html=True,
+            )
+
+    st.markdown(
+        '<div class="ba-card"><div class="ba-card-title">📁 My Project</div>'
+        f'<div style="color:#dde8f5;font-size:13px;line-height:1.9;">'
+        f'<strong>Builder:</strong> {builder_name}<br>'
+        f'<strong>Service providers:</strong> {", ".join(provider_names) if provider_names else "None selected"}<br>'
+        f'<strong>Materials:</strong> {", ".join(material_names) if material_names else "None selected"}<br>'
+        f'<strong>Estimated cost:</strong> {budget_value}<br>'
+        f'<strong>Current progress:</strong> {project["progress"]}%<br>'
+        f'<strong>Pending requests:</strong> {pending_requests}'
+        '</div></div>',
+        unsafe_allow_html=True,
+    )
+
+    st.markdown('<div class="ba-divider"></div>', unsafe_allow_html=True)
+    left_col, right_col = st.columns([1.4, 1])
+
+    with left_col:
+        st.markdown('<div class="ba-card-title">⚡ Quick Actions</div>', unsafe_allow_html=True)
+        quick_actions = [
+            ("👷 Find a Builder", "👷  Find Builder"),
+            ("🧱 Browse Materials", "🧱  Material Marketplace"),
+            ("💰 Estimate Project Cost", "💰  Cost Prediction"),
+            ("📋 Track Construction", "🏗️  Construction Progress"),
+        ]
+        action_cols = st.columns(2)
+        for index, (label, target_page) in enumerate(quick_actions):
+            with action_cols[index % 2]:
+                if st.button(label, key=f"customer_action_{index}", use_container_width=True):
+                    st.session_state["active_page"] = target_page
+                    st.rerun()
+
+    with right_col:
+        st.markdown('<div class="ba-card-title">🕘 Recent Activity</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div style="color:#dde8f5;font-size:13px;line-height:2;">'
+            '• Customer profile created<br>'
+            '• Project workspace ready<br>'
+            '• No quotations requested yet'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+    st.markdown('<div class="ba-divider"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="ba-card-title">📋 MY QUOTE REQUESTS</div>', unsafe_allow_html=True)
+    customer_quote_requests = [request for request in _quote_requests() if request.get("customer_id") == _current_customer_id()]
+    if not customer_quote_requests:
+        st.info("No quote requests yet.")
+    else:
+        for request in customer_quote_requests[:5]:
+            st.markdown(
+                f'<div class="ba-card"><strong>{request.get("request_id", "Quote Request")}</strong> · '
+                f'{request.get("builder_name", "")} · {request.get("project_city", "")} · '
+                f'{request.get("status", "New")}</div>',
+                unsafe_allow_html=True,
+            )
+        if st.button("View My Quote Requests", key="dashboard_view_quote_requests", use_container_width=True):
+            st.session_state["active_page"] = "📋  Requests / Quotations"
+            st.rerun()
+
+
+def find_service_provider():
+    """Render a customer-facing service provider marketplace with mock data."""
+    providers = [
+        {"id": 1, "name": "Ravi ColorCraft", "category": "Painter", "city": "Delhi", "experience": 12, "rating": 4.8, "price_min": 18000, "price_max": 65000, "price_label": "₹18K-₹65K per project", "availability": "Available now", "verified": True, "portfolio": 18},
+        {"id": 2, "name": "SparkPro Electricals", "category": "Electrician", "city": "Noida", "experience": 9, "rating": 4.7, "price_min": 12000, "price_max": 48000, "price_label": "₹12K-₹48K per project", "availability": "Within 1 week", "verified": True, "portfolio": 24},
+        {"id": 3, "name": "FlowRight Plumbing", "category": "Plumber", "city": "Ghaziabad", "experience": 14, "rating": 4.6, "price_min": 8000, "price_max": 35000, "price_label": "₹8K-₹35K per project", "availability": "Available now", "verified": True, "portfolio": 15},
+        {"id": 4, "name": "Woodline Studio", "category": "Carpenter", "city": "Delhi", "experience": 16, "rating": 4.9, "price_min": 25000, "price_max": 120000, "price_label": "₹25K-₹1.2L per project", "availability": "Within 1 week", "verified": True, "portfolio": 31},
+        {"id": 5, "name": "NestForm Interiors", "category": "Interior Designer", "city": "Gurgaon", "experience": 11, "rating": 4.8, "price_min": 50000, "price_max": 300000, "price_label": "₹50K-₹3L per project", "availability": "Available now", "verified": True, "portfolio": 22},
+        {"id": 6, "name": "Stone & Tile Works", "category": "Tile / Marble Contractor", "city": "Noida", "experience": 13, "rating": 4.5, "price_min": 30000, "price_max": 180000, "price_label": "₹30K-₹1.8L per project", "availability": "Within 2 weeks", "verified": True, "portfolio": 19},
+        {"id": 7, "name": "CeilingCraft POP", "category": "False Ceiling / POP", "city": "Delhi", "experience": 8, "rating": 4.4, "price_min": 22000, "price_max": 110000, "price_label": "₹22K-₹1.1L per project", "availability": "Available now", "verified": False, "portfolio": 12},
+        {"id": 8, "name": "DryShield Waterproofing", "category": "Waterproofing", "city": "Faridabad", "experience": 10, "rating": 4.6, "price_min": 15000, "price_max": 90000, "price_label": "₹15K-₹90K per project", "availability": "Within 1 week", "verified": True, "portfolio": 16},
+        {"id": 9, "name": "MetalGrid Fabricators", "category": "Fabricator", "city": "Gurgaon", "experience": 18, "rating": 4.7, "price_min": 35000, "price_max": 220000, "price_label": "₹35K-₹2.2L per project", "availability": "Within 2 weeks", "verified": True, "portfolio": 27},
+        {"id": 10, "name": "ModuSpace Kitchens", "category": "Modular Kitchen", "city": "Noida", "experience": 7, "rating": 4.5, "price_min": 80000, "price_max": 350000, "price_label": "₹80K-₹3.5L per project", "availability": "Within 1 week", "verified": True, "portfolio": 14},
+        {"id": 11, "name": "RenewBuild Contractors", "category": "Renovation Contractor", "city": "Delhi", "experience": 15, "rating": 4.8, "price_min": 60000, "price_max": 450000, "price_label": "₹60K-₹4.5L per project", "availability": "Available now", "verified": True, "portfolio": 29},
+    ]
+
+    st.markdown('<h1 class="main-header">🛠️ Find Service Provider</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Find trusted professionals for your construction project</p>', unsafe_allow_html=True)
+
+    filter_cols = st.columns([2, 1.5, 1.5, 1.5])
+    with filter_cols[0]:
+        search = st.text_input("Search providers", placeholder="Name or category", key="provider_search")
+    with filter_cols[1]:
+        categories = ["All categories"] + sorted({provider["category"] for provider in providers})
+        category = st.selectbox("Category", categories, key="provider_category")
+    with filter_cols[2]:
+        cities = ["All cities"] + sorted({provider["city"] for provider in providers})
+        city = st.selectbox("City / location", cities, key="provider_city")
+    with filter_cols[3]:
+        minimum_rating = st.selectbox("Minimum rating", ["Any rating", "4.0+", "4.5+", "4.8+"], key="provider_rating")
+
+    budget_min, budget_max = st.slider(
+        "Budget / price range (₹)",
+        min_value=5000,
+        max_value=500000,
+        value=(5000, 500000),
+        step=5000,
+        key="provider_budget",
+    )
+    availability = st.selectbox(
+        "Availability",
+        ["Any availability", "Available now", "Within 1 week", "Within 2 weeks"],
+        key="provider_availability",
+    )
+
+    filtered_providers = providers
+    if search:
+        search_value = search.lower()
+        filtered_providers = [
+            provider for provider in filtered_providers
+            if search_value in provider["name"].lower() or search_value in provider["category"].lower()
+        ]
+    if category != "All categories":
+        filtered_providers = [provider for provider in filtered_providers if provider["category"] == category]
+    if city != "All cities":
+        filtered_providers = [provider for provider in filtered_providers if provider["city"] == city]
+    if minimum_rating != "Any rating":
+        filtered_providers = [provider for provider in filtered_providers if provider["rating"] >= float(minimum_rating.rstrip("+"))]
+    if availability != "Any availability":
+        filtered_providers = [provider for provider in filtered_providers if provider["availability"] == availability]
+    filtered_providers = [
+        provider for provider in filtered_providers
+        if provider["price_max"] >= budget_min and provider["price_min"] <= budget_max
+    ]
+
+    st.markdown('<div class="ba-divider"></div>', unsafe_allow_html=True)
+    st.markdown(f"### {len(filtered_providers)} service provider(s) found")
+    if not filtered_providers:
+        st.info("No providers match these filters. Try widening the city, rating, or budget range.")
+    else:
+        for provider in filtered_providers:
+            verified = "✅ Verified" if provider["verified"] else "◌ Verification pending"
+            st.markdown(
+                f'<div class="ba-card"><div style="display:flex;justify-content:space-between;gap:16px;">'
+                f'<div><div class="ba-card-title">{provider["name"]}</div>'
+                f'<div style="color:#00e5b0;font-size:13px;font-weight:700;">{provider["category"]}</div></div>'
+                f'<div style="color:#b0c9e3;font-size:12px;text-align:right;">{verified}<br>⭐ {provider["rating"]}/5</div></div>'
+                f'<div style="color:#dde8f5;font-size:13px;line-height:1.9;margin-top:10px;">'
+                f'📍 {provider["city"]} · 🧰 {provider["experience"]} years experience<br>'
+                f'💰 {provider["price_label"]} · 📅 {provider["availability"]}<br>'
+                f'🖼️ Portfolio: {provider["portfolio"]} completed projects</div></div>',
+                unsafe_allow_html=True,
+            )
+            action_cols = st.columns(2)
+            with action_cols[0]:
+                if st.button("View Profile", key=f"provider_view_{provider['id']}", use_container_width=True):
+                    st.session_state["selected_service_provider"] = provider
+                    st.session_state["service_provider_request_mode"] = False
+                    add_project_item("service_providers", provider, "id")
+                    st.rerun()
+            with action_cols[1]:
+                if st.button("Request Quote", key=f"provider_quote_{provider['id']}", type="primary", use_container_width=True):
+                    st.session_state["selected_service_provider"] = provider
+                    st.session_state["service_provider_request_mode"] = True
+                    add_project_item("service_providers", provider, "id")
+                    st.rerun()
+
+    selected_provider = st.session_state.get("selected_service_provider")
+    if selected_provider:
+        st.markdown('<div class="ba-divider"></div>', unsafe_allow_html=True)
+        if st.session_state.get("service_provider_request_mode"):
+            st.markdown(f"### Request a quote from {selected_provider['name']}")
+            with st.form(f"provider_quote_form_{selected_provider['id']}"):
+                project_summary = st.text_input("Project summary *", placeholder="e.g. Paint my 3BHK house")
+                preferred_start = st.text_input("Preferred start date", placeholder="e.g. Next month")
+                customer_note = st.text_area("Additional requirements", placeholder="Share measurements, scope, or other details")
+                submit_request = st.form_submit_button("Create Mock Quote Request", type="primary", use_container_width=True)
+            if submit_request:
+                if not project_summary.strip():
+                    st.error("Please add a project summary before submitting.")
+                else:
+                    requests = st.session_state.setdefault("customer_requests", [])
+                    requests.append({
+                        "title": f"Quote request: {selected_provider['name']}",
+                        "status": "Submitted",
+                        "provider": selected_provider["name"],
+                        "category": selected_provider["category"],
+                        "project_summary": project_summary,
+                        "preferred_start": preferred_start,
+                        "note": customer_note,
+                    })
+                    st.session_state["selected_service_provider"] = None
+                    st.session_state["service_provider_request_mode"] = False
+                    st.success("Mock quote request created for this session.")
+        else:
+            st.markdown(f"### {selected_provider['name']} profile")
+            st.markdown(
+                f'<div class="ba-card"><div class="ba-card-title">{selected_provider["category"]} · {selected_provider["city"]}</div>'
+                f'<div style="color:#dde8f5;font-size:14px;line-height:2;">'
+                f'⭐ Rated {selected_provider["rating"]}/5<br>'
+                f'🧰 {selected_provider["experience"]} years experience<br>'
+                f'💰 {selected_provider["price_label"]}<br>'
+                f'🖼️ Portfolio includes {selected_provider["portfolio"]} completed projects<br>'
+                f'{"✅ Verified professional" if selected_provider["verified"] else "◌ Verification in progress"}'
+                '</div></div>',
+                unsafe_allow_html=True,
+            )
+
+
+def customer_requests():
+    """Render persisted quote requests belonging only to the current customer."""
+    st.markdown('<h1 class="main-header">📋 My Requests / Quotations</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Keep track of builder and supplier conversations</p>', unsafe_allow_html=True)
+    customer_id = _current_customer_id()
+    requests = [request for request in _quote_requests() if request.get("customer_id") == customer_id]
+    if not requests:
+        st.markdown(
+            '<div class="ba-card" style="text-align:center;padding:42px 24px;">'
+            '<div style="font-size:42px;margin-bottom:14px;">📭</div>'
+            '<div class="ba-card-title">No quote requests yet.</div>'
+            '<div style="color:#b0c9e3;font-size:14px;">Find a Builder to request a construction quotation.</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        for request in requests:
+            st.markdown(
+                f'<div class="ba-card"><div class="ba-card-title">{request.get("request_id", "Quote Request")}</div>'
+                f'<div style="color:#b0c9e3;font-size:13px;line-height:1.9;">'
+                f'🏗️ Builder: {request.get("builder_name", "")}<br>📍 Project City: {request.get("project_city", "")}<br>'
+                f'📐 Area: {request.get("construction_area", 0):,.0f} sq.ft. · 💰 Budget: ₹{request.get("estimated_budget", 0):,.0f}<br>'
+                f'📅 Date: {request.get("created_at", "")[:10]} · Status: <strong>{request.get("status", "New")}</strong></div></div>',
+                unsafe_allow_html=True,
+            )
+
+
+def customer_profile():
+    """Render a lightweight session-only customer profile."""
+    st.markdown('<h1 class="main-header">👤 Customer Profile</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Manage your project contact details</p>', unsafe_allow_html=True)
+    st.session_state.setdefault("customer_name", "Customer")
+    st.session_state.setdefault("customer_email", "")
+    st.session_state.setdefault("customer_phone", "")
+
+    with st.form("customer_profile_form"):
+        name = st.text_input("Name", value=st.session_state["customer_name"])
+        email = st.text_input("Email", value=st.session_state["customer_email"])
+        phone = st.text_input("Phone", value=st.session_state["customer_phone"])
+        submitted = st.form_submit_button("Save Profile", type="primary", use_container_width=True)
+    if submitted:
+        st.session_state["customer_name"] = name or "Customer"
+        st.session_state["customer_email"] = email
+        st.session_state["customer_phone"] = phone
+        st.success("Profile saved for this session.")
+
+
+def builder_dashboard():
+    """Render the builder overview using lightweight prototype data."""
+    st.markdown('<h1 class="main-header">🏗️ Builder Dashboard</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Your projects, leads, and delivery operations</p>', unsafe_allow_html=True)
+
+    builder_account = _current_account()
+    verification_result = _verify_razorpay_callback(builder_account)
+    subscription = builder_account.get("subscription", {})
+    if subscription.get("status") == "active":
+        st.markdown(
+            f'<div class="ba-card"><div class="ba-card-title">✓ SUBSCRIPTION ACTIVE</div>'
+            f'<div style="color:#dde8f5;font-size:14px;line-height:1.9;">Builder Pro<br>'
+            f'₹{subscription.get("amount", 500):,.0f} / month<br>'
+            f'Next billing: {subscription.get("next_billing_date", "") }<br>'
+            f'Payment ID: {subscription.get("razorpay_payment_id", "")[-8:]}</div></div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            '<div class="ba-card"><div class="ba-card-title">BUILDER PRO</div>'
+            '<div style="color:#dde8f5;font-size:14px;line-height:1.9;">'
+            '₹500 / month<br>Unlock your full BuildAtlas builder presence</div></div>',
+            unsafe_allow_html=True,
+        )
+        if st.button("Subscribe Now", key="builder_subscribe_now", type="primary", use_container_width=True):
+            pending_order = st.session_state.get("razorpay_pending_order", {})
+            if pending_order.get("builder_email") != builder_account.get("email"):
+                order, error = _create_razorpay_order(builder_account)
+                if error:
+                    st.warning(error)
+                else:
+                    st.session_state["razorpay_pending_order"] = {
+                        "builder_email": builder_account.get("email"),
+                        "order_id": order["id"],
+                    }
+                    pending_order = st.session_state["razorpay_pending_order"]
+            if pending_order.get("order_id"):
+                st.rerun()
+
+        pending_order = st.session_state.get("razorpay_pending_order", {})
+        if pending_order.get("builder_email") == builder_account.get("email") and pending_order.get("order_id"):
+            st.info("Razorpay TEST MODE checkout is ready.")
+            components.html(
+                _razorpay_checkout({"id": pending_order["order_id"]}),
+                height=80,
+                scrolling=False,
+            )
+
+    st.markdown(
+        '<div class="ba-card"><div class="ba-card-title">Welcome, Build Partner</div>'
+        '<div style="color:#b0c9e3;font-size:14px;line-height:1.6;">'
+        'Stay ahead of customer requests, project delivery, quotations, and site requirements.'
+        '</div></div>',
+        unsafe_allow_html=True,
+    )
+
+    summary_cols = st.columns(4)
+    summary = [
+        ("🏗️ Active Projects", "3", "2 on schedule"),
+        ("👥 Customer Leads", "8", "3 new this week"),
+        ("💰 Estimated Value", "₹1.42 Cr", "Across active projects"),
+        ("📊 Current Progress", "64%", "Portfolio average"),
+        ("📋 Pending Quotations", "5", "2 need attention"),
+        ("🧱 Material Requirements", "12", "Items to source"),
+    ]
+    for index, (label, value, detail) in enumerate(summary):
+        with summary_cols[index % 4]:
+            st.markdown(
+                f'<div class="metric-card"><div class="metric-label">{label}</div>'
+                f'<div class="metric-value">{value}</div>'
+                f'<div style="color:#b0c9e3;font-size:11px;margin-top:6px;">{detail}</div></div>',
+                unsafe_allow_html=True,
+            )
+
+    st.markdown('<div class="ba-divider"></div>', unsafe_allow_html=True)
+    left_col, right_col = st.columns([1.35, 1])
+    with left_col:
+        st.markdown('<div class="ba-card-title">⚡ Builder Quick Actions</div>', unsafe_allow_html=True)
+        actions = [
+            ("🏗️ View My Projects", "🏗️  Projects"),
+            ("👥 Review Customer Leads", "👥  Customer Leads"),
+            ("📋 Manage Quotations", "📋  Quotations"),
+            ("🧱 Check Materials", "🧱  Material Requirements"),
+        ]
+        action_cols = st.columns(2)
+        for index, (label, target_page) in enumerate(actions):
+            with action_cols[index % 2]:
+                if st.button(label, key=f"builder_action_{index}", use_container_width=True):
+                    st.session_state["active_page"] = target_page
+                    st.rerun()
+
+    with right_col:
+        st.markdown('<div class="ba-card-title">🕘 Recent Customer Requests</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div style="color:#dde8f5;font-size:13px;line-height:2;">'
+            '• 3BHK home estimate · New<br>'
+            '• Villa renovation · Awaiting reply<br>'
+            '• Material quote follow-up · Today'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+    st.markdown('<div class="ba-divider"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="ba-card-title">📋 QUOTE REQUESTS</div>', unsafe_allow_html=True)
+    builder_quote_requests = [request for request in _quote_requests() if request.get("builder_id") in _current_builder_ids()]
+    if not builder_quote_requests:
+        st.info("No new quote requests.")
+    else:
+        for request in builder_quote_requests[:5]:
+            st.markdown(
+                f'<div class="ba-card"><strong>{request.get("request_id", "Quote Request")}</strong> · '
+                f'{request.get("customer_name", "Customer")} · {request.get("project_city", "")} · '
+                f'{request.get("status", "New")}</div>',
+                unsafe_allow_html=True,
+            )
+
+
+def builder_projects():
+    """Render the builder's current mock project list."""
+    st.markdown('<h1 class="main-header">🏗️ My Projects</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Active delivery portfolio and project status</p>', unsafe_allow_html=True)
+    projects = [
+        ("Sharma Residence", "Ghaziabad", "Structure", "68%", "₹48 Lakhs"),
+        ("Mehta Villa", "Noida", "Brickwork", "42%", "₹62 Lakhs"),
+        ("Kapoor Renovation", "Delhi", "Planning", "18%", "₹32 Lakhs"),
+    ]
+    for name, location, stage, progress, value in projects:
+        st.markdown(
+            f'<div class="ba-card"><div class="ba-card-title">{name}</div>'
+            f'<div style="color:#b0c9e3;font-size:13px;line-height:1.9;">'
+            f'📍 {location}<br>🏗️ Stage: {stage}<br>📊 Progress: {progress}<br>💰 Estimated value: {value}'
+            '</div></div>',
+            unsafe_allow_html=True,
+        )
+
+
+def builder_leads():
+    """Render customer requests as a simple builder lead inbox."""
+    st.markdown('<h1 class="main-header">👥 Customer Requests / Leads</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Review incoming project opportunities</p>', unsafe_allow_html=True)
+    leads = [
+        ("Rohan Mehta", "3BHK home construction", "Noida", "New"),
+        ("Anita Sharma", "Villa renovation", "Ghaziabad", "Follow-up"),
+        ("Vikram Kapoor", "Independent house", "Delhi", "Quoted"),
+    ]
+    for index, (name, project, location, status) in enumerate(leads):
+        col_info, col_action = st.columns([4, 1])
+        with col_info:
+            st.markdown(
+                f'<div class="ba-card"><div class="ba-card-title">{project}</div>'
+                f'<div style="color:#b0c9e3;font-size:13px;">{name} · {location} · Status: {status}</div></div>',
+                unsafe_allow_html=True,
+            )
+        with col_action:
+            st.write("")
+            if st.button("View", key=f"builder_lead_{index}", use_container_width=True):
+                st.info(f"Lead contact details for {name} will be connected in a future backend update.")
+
+
+def builder_material_requirements():
+    """Render current material needs for builder projects."""
+    st.markdown('<h1 class="main-header">🧱 Material Requirements</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Plan upcoming material requirements across projects</p>', unsafe_allow_html=True)
+    requirements = pd.DataFrame([
+        {"Project": "Sharma Residence", "Material": "Cement", "Required": "180 bags", "Status": "Order soon"},
+        {"Project": "Mehta Villa", "Material": "TMT Steel 12mm", "Required": "4.5 tons", "Status": "Requested"},
+        {"Project": "Kapoor Renovation", "Material": "Ceramic Floor Tiles", "Required": "1,200 sqft", "Status": "Pending quote"},
+    ])
+    st.dataframe(requirements, use_container_width=True, hide_index=True)
+    st.info("Use Material Suppliers / Dealers to compare available products and request supplier quotes.")
+
+
+def builder_suppliers():
+    """Reuse the existing marketplace for builder supplier discovery."""
+    st.markdown('<h1 class="main-header">🛒 Material Suppliers / Dealers</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Source materials from trusted marketplace suppliers</p>', unsafe_allow_html=True)
+    material_marketplace()
+
+
+def builder_quotations():
+    """Render and securely manage quote requests addressed to the current builder."""
+    st.markdown('<h1 class="main-header">📋 Quotations</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Review incoming construction quotation requests</p>', unsafe_allow_html=True)
+    builder_ids = _current_builder_ids()
+    requests = [request for request in _quote_requests() if request.get("builder_id") in builder_ids]
+    if not requests:
+        st.markdown('<div class="ba-card"><div class="ba-card-title">No new quote requests.</div><div style="color:#b0c9e3;">New customer requests addressed to your builder account will appear here.</div></div>', unsafe_allow_html=True)
+        return
+
+    for request in requests:
+        request_id = request.get("request_id", "quote")
+        with st.expander(f"{request_id} · {request.get('customer_name', 'Customer')} · {request.get('project_city', '')}"):
+            st.markdown("### REQUEST DETAILS")
+            st.markdown(
+                f'👤 Customer Name: {request.get("customer_name", "")}<br>'
+                f'📞 Customer Phone: {request.get("customer_phone", "")}<br>'
+                f'✉️ Customer Email: {request.get("customer_email", "")}<br>'
+                f'📍 Project City: {request.get("project_city", "")}<br>'
+                f'🏠 Property Type: {request.get("property_type", "")}<br>'
+                f'📐 Construction Area: {request.get("construction_area", 0):,.0f} sq.ft.<br>'
+                f'🏢 Number of Floors: {request.get("floors", 0)}<br>'
+                f'💰 Estimated Budget: ₹{request.get("estimated_budget", 0):,.0f}<br>'
+                f'📅 Expected Start Date: {request.get("expected_start_date", "")}<br>'
+                f'📝 Requirements: {request.get("requirements", "") or "None provided"}',
+                unsafe_allow_html=True,
+            )
+            current_status = request.get("status", "New")
+            status_index = QUOTE_STATUSES.index(current_status) if current_status in QUOTE_STATUSES else 0
+            new_status = st.selectbox("Status", QUOTE_STATUSES, index=status_index, key=f"quote_status_{request_id}")
+            if st.button("Update Status", key=f"quote_update_{request_id}", type="primary"):
+                persisted = _quote_requests()
+                target = next((item for item in persisted if item.get("request_id") == request_id and item.get("builder_id") in builder_ids), None)
+                if target is None:
+                    st.error("This quote request is not available for your builder account.")
+                else:
+                    target["status"] = new_status
+                    target["updated_at"] = datetime.now().isoformat(timespec="seconds")
+                    _save_quote_requests(persisted)
+                    st.success("Request status updated.")
+                    st.rerun()
+
+
+def builder_documents():
+    """Render a placeholder for builder project documents."""
+    st.markdown('<h1 class="main-header">📁 Documents</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Keep project files organized</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="ba-card" style="text-align:center;padding:42px 24px;">'
+        '<div style="font-size:42px;margin-bottom:14px;">📁</div>'
+        '<div class="ba-card-title">Document workspace coming soon</div>'
+        '<div style="color:#b0c9e3;font-size:14px;">Plans, permits, agreements, and site records will be organized here.</div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def builder_reviews():
+    """Render the builder's mock review summary."""
+    st.markdown('<h1 class="main-header">⭐ Reviews</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Customer feedback and service quality</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="ba-card"><div class="ba-card-title">4.6 / 5.0 overall rating</div>'
+        '<div style="color:#b0c9e3;font-size:13px;line-height:2;">'
+        '⭐ 4.8 · Quality of work<br>⭐ 4.5 · Timeline reliability<br>⭐ 4.6 · Communication<br><br>'
+        'Recent feedback will be connected to customer reviews in a future backend update.'
+        '</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def builder_profile():
+    """Render a lightweight session-only builder profile."""
+    st.markdown('<h1 class="main-header">👤 Builder Profile</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Manage your business information</p>', unsafe_allow_html=True)
+    st.session_state.setdefault("builder_name", "Build Partner")
+    st.session_state.setdefault("builder_company", "BuildAtlas Construction")
+    st.session_state.setdefault("builder_phone", "")
+    with st.form("builder_profile_form"):
+        name = st.text_input("Contact Name", value=st.session_state["builder_name"])
+        company = st.text_input("Business Name", value=st.session_state["builder_company"])
+        phone = st.text_input("Phone", value=st.session_state["builder_phone"])
+        submitted = st.form_submit_button("Save Profile", type="primary", use_container_width=True)
+    if submitted:
+        st.session_state["builder_name"] = name or "Build Partner"
+        st.session_state["builder_company"] = company or "BuildAtlas Construction"
+        st.session_state["builder_phone"] = phone
+        st.success("Builder profile saved for this session.")
+
+
+def dealer_dashboard():
+    """Render the supplier overview using the existing materials catalogue."""
+    materials = get_materials_database()
+    low_stock = int((materials["stock"] < 500).sum())
+    st.markdown('<h1 class="main-header">🛒 Dealer Dashboard</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Manage products, enquiries, orders, and deliveries</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="ba-card"><div class="ba-card-title">Welcome, Material Partner</div>'
+        '<div style="color:#b0c9e3;font-size:14px;line-height:1.6;">'
+        'Keep your catalogue accurate, respond to project enquiries, and stay ahead of stock and deliveries.'
+        '</div></div>',
+        unsafe_allow_html=True,
+    )
+
+    metrics = [
+        ("📦 Total Products", f"{len(materials)}", "In catalogue"),
+        ("📊 Inventory Status", "Healthy", f"{low_stock} low-stock items"),
+        ("💬 New Enquiries", "14", "5 new this week"),
+        ("📋 Pending Quotations", "7", "3 need attention"),
+        ("🚚 Open Orders", "9", "2 dispatch today"),
+        ("💰 Estimated Sales", "₹18.6 Lakhs", "This month"),
+        ("⚠️ Low-Stock Alerts", f"{low_stock}", "Restock recommended"),
+        ("⭐ Store Rating", "4.7 / 5", "From 86 reviews"),
+    ]
+    metric_cols = st.columns(4)
+    for index, (label, value, detail) in enumerate(metrics):
+        with metric_cols[index % 4]:
+            st.markdown(
+                f'<div class="metric-card"><div class="metric-label">{label}</div>'
+                f'<div class="metric-value">{value}</div>'
+                f'<div style="color:#b0c9e3;font-size:11px;margin-top:6px;">{detail}</div></div>',
+                unsafe_allow_html=True,
+            )
+
+    st.markdown('<div class="ba-divider"></div>', unsafe_allow_html=True)
+    left_col, right_col = st.columns([1.35, 1])
+    with left_col:
+        st.markdown('<div class="ba-card-title">⚡ Dealer Quick Actions</div>', unsafe_allow_html=True)
+        actions = [
+            ("📦 View Product Catalogue", "📦  Product Catalogue"),
+            ("⚠️ Check Low Stock", "📊  Inventory"),
+            ("💬 Review Enquiries", "💬  Enquiries"),
+            ("🚚 Manage Deliveries", "🚚  Delivery"),
+        ]
+        action_cols = st.columns(2)
+        for index, (label, target_page) in enumerate(actions):
+            with action_cols[index % 2]:
+                if st.button(label, key=f"dealer_action_{index}", use_container_width=True):
+                    st.session_state["active_page"] = target_page
+                    st.rerun()
+
+    with right_col:
+        st.markdown('<div class="ba-card-title">🕘 Recent Activity</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div style="color:#dde8f5;font-size:13px;line-height:2;">'
+            '• New builder enquiry · 10 min ago<br>'
+            '• TMT Steel 12mm stock updated<br>'
+            '• Order OD-2048 ready for dispatch<br>'
+            '• Customer review received · 4 stars'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+
+def dealer_catalogue():
+    """Show the dealer catalogue using the shared construction materials data."""
+    st.markdown('<h1 class="main-header">📦 Product Catalogue</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Manage the products visible to construction partners</p>', unsafe_allow_html=True)
+    materials = get_materials_database()
+    category = st.selectbox("Category", ["All"] + sorted(materials["category"].unique().tolist()), key="dealer_catalogue_category")
+    search = st.text_input("Search catalogue", placeholder="Product, brand, or supplier", key="dealer_catalogue_search")
+    filtered = materials if category == "All" else materials[materials["category"] == category]
+    if search:
+        search_value = search.lower()
+        filtered = filtered[
+            filtered["name"].str.lower().str.contains(search_value)
+            | filtered["brand"].str.lower().str.contains(search_value)
+            | filtered["supplier"].str.lower().str.contains(search_value)
+        ]
+    st.dataframe(
+        filtered[["category", "name", "brand", "price", "unit", "stock", "delivery_days", "rating"]]
+        .rename(columns={"category": "Category", "name": "Product", "brand": "Brand", "price": "Price (₹)", "unit": "Unit", "stock": "Stock", "delivery_days": "Delivery (days)", "rating": "Rating"}),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def dealer_inventory():
+    """Show inventory levels and low-stock alerts for catalogue products."""
+    st.markdown('<h1 class="main-header">📊 Inventory</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Monitor available stock across your product catalogue</p>', unsafe_allow_html=True)
+    materials = get_materials_database().copy()
+    materials["Status"] = materials["stock"].apply(lambda stock: "⚠️ Low stock" if stock < 500 else "✅ In stock")
+    low_stock = materials[materials["stock"] < 500]
+    if not low_stock.empty:
+        st.warning(f"{len(low_stock)} products need restocking soon.")
+    st.dataframe(
+        materials[["name", "category", "stock", "unit", "delivery_days", "Status"]]
+        .rename(columns={"name": "Product", "category": "Category", "stock": "Available Stock", "unit": "Unit", "delivery_days": "Lead Time (days)"}),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def dealer_enquiries():
+    """Render mock customer and builder enquiries."""
+    st.markdown('<h1 class="main-header">💬 Customer / Builder Enquiries</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Respond to product and bulk-order questions</p>', unsafe_allow_html=True)
+    enquiries = pd.DataFrame([
+        {"From": "Apex Constructions", "Subject": "TMT Steel 12mm bulk rate", "Received": "Today", "Status": "New"},
+        {"From": "Rohan Mehta", "Subject": "Cement for 3BHK project", "Received": "Yesterday", "Status": "Replied"},
+        {"From": "Sharma Constructions", "Subject": "Next-day sand delivery", "Received": "2 days ago", "Status": "Awaiting details"},
+    ])
+    st.dataframe(enquiries, use_container_width=True, hide_index=True)
+    if st.button("Open Enquiry Inbox", type="primary", use_container_width=True):
+        st.info("Messaging will be connected to customer and builder records in a future backend update.")
+
+
+def dealer_quotations():
+    """Render mock supplier quotations."""
+    st.markdown('<h1 class="main-header">📋 Quotations</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Prepare and track material quotations</p>', unsafe_allow_html=True)
+    quotations = pd.DataFrame([
+        {"Reference": "DQ-4021", "Requested By": "Apex Constructions", "Items": "TMT Steel, Cement", "Value": "₹2.8 Lakhs", "Status": "Pending"},
+        {"Reference": "DQ-4018", "Requested By": "Sharma Constructions", "Items": "Sand, Bricks", "Value": "₹86,000", "Status": "Sent"},
+        {"Reference": "DQ-4009", "Requested By": "Rohan Mehta", "Items": "Cement", "Value": "₹74,000", "Status": "Accepted"},
+    ])
+    st.dataframe(quotations, use_container_width=True, hide_index=True)
+    if st.button("Create Quotation", type="primary", use_container_width=True):
+        st.info("Quotation creation will be connected to enquiry details in a future backend update.")
+
+
+def dealer_orders():
+    """Render mock orders and fulfilment requests."""
+    st.markdown('<h1 class="main-header">🧾 Orders / Requests</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Track incoming orders and fulfilment status</p>', unsafe_allow_html=True)
+    orders = pd.DataFrame([
+        {"Order": "OD-2048", "Buyer": "Apex Constructions", "Items": "Steel + Cement", "Value": "₹1.24 Lakhs", "Status": "Ready to dispatch"},
+        {"Order": "OD-2045", "Buyer": "Mehta Villa", "Items": "Floor Tiles", "Value": "₹1.02 Lakhs", "Status": "Processing"},
+        {"Order": "OD-2039", "Buyer": "Kapoor Renovation", "Items": "Paint + Plumbing", "Value": "₹68,500", "Status": "Delivered"},
+    ])
+    st.dataframe(orders, use_container_width=True, hide_index=True)
+
+
+def dealer_delivery_management():
+    """Render mock delivery planning without real order processing."""
+    st.markdown('<h1 class="main-header">🚚 Delivery Management</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Coordinate dispatches and expected delivery dates</p>', unsafe_allow_html=True)
+    deliveries = pd.DataFrame([
+        {"Order": "OD-2048", "Destination": "Noida", "Dispatch": "Today", "Expected": "Tomorrow", "Status": "Packed"},
+        {"Order": "OD-2045", "Destination": "Delhi", "Dispatch": "Tomorrow", "Expected": "In 3 days", "Status": "Scheduling"},
+        {"Order": "OD-2039", "Destination": "Ghaziabad", "Dispatch": "Completed", "Expected": "Delivered", "Status": "Delivered"},
+    ])
+    st.dataframe(deliveries, use_container_width=True, hide_index=True)
+    st.info("Courier and live tracking integrations will be added after the backend workflow is defined.")
+
+
+def dealer_sales_analytics():
+    """Render a small mock sales summary for the dealer portal."""
+    st.markdown('<h1 class="main-header">📈 Sales Analytics</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Review catalogue performance and sales trends</p>', unsafe_allow_html=True)
+    cols = st.columns(3)
+    for column, label, value in zip(cols, ["Monthly Sales", "Average Order", "Conversion Rate"], ["₹18.6 Lakhs", "₹42,300", "31%"]):
+        with column:
+            st.metric(label, value)
+    chart_data = pd.DataFrame({"Category": ["Cement", "Steel", "Bricks", "Sand", "Tiles", "Paint"], "Sales (₹ Lakhs)": [4.8, 5.6, 2.1, 1.7, 2.8, 1.6]})
+    fig = px.bar(chart_data, x="Category", y="Sales (₹ Lakhs)", color="Sales (₹ Lakhs)", color_continuous_scale=["#1e2d42", "#00e5b0"])
+    fig = apply_dark(fig)
+    fig.update_coloraxes(showscale=False)
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def dealer_reviews():
+    """Render mock marketplace review feedback."""
+    st.markdown('<h1 class="main-header">⭐ Reviews</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Customer and builder feedback on your products</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="ba-card"><div class="ba-card-title">4.7 / 5.0 overall rating</div>'
+        '<div style="color:#b0c9e3;font-size:13px;line-height:2;">'
+        '⭐ 4.8 · Product quality<br>⭐ 4.6 · Delivery reliability<br>⭐ 4.7 · Communication<br><br>'
+        'New review responses will be connected to the marketplace account in a future backend update.'
+        '</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def dealer_profile():
+    """Render a lightweight session-only dealer business profile."""
+    st.markdown('<h1 class="main-header">🏢 Business Profile</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Manage your supplier business information</p>', unsafe_allow_html=True)
+    st.session_state.setdefault("dealer_business_name", "BuildAtlas Materials Supply")
+    st.session_state.setdefault("dealer_contact_name", "Material Partner")
+    st.session_state.setdefault("dealer_phone", "")
+    with st.form("dealer_profile_form"):
+        business_name = st.text_input("Business Name", value=st.session_state["dealer_business_name"])
+        contact_name = st.text_input("Contact Name", value=st.session_state["dealer_contact_name"])
+        phone = st.text_input("Phone", value=st.session_state["dealer_phone"])
+        submitted = st.form_submit_button("Save Profile", type="primary", use_container_width=True)
+    if submitted:
+        st.session_state["dealer_business_name"] = business_name or "BuildAtlas Materials Supply"
+        st.session_state["dealer_contact_name"] = contact_name or "Material Partner"
+        st.session_state["dealer_phone"] = phone
+        st.success("Business profile saved for this session.")
+
+
+ROLE_CUSTOMER = "CUSTOMER"
+ROLE_BUILDER = "BUILDER / CONTRACTOR"
+ROLE_VENDOR = "DEALER / SUPPLIER"
+ROLE_LABELS = {
+    ROLE_CUSTOMER: "Customer",
+    ROLE_BUILDER: "Builder",
+    ROLE_VENDOR: "Vendor",
+}
+PRIMARY_ROLES = tuple(ROLE_LABELS)
+OTP_TTL_SECONDS = 300
+OTP_RESEND_COOLDOWN_SECONDS = 60
+OTP_MAX_ATTEMPTS = 5
+PASSWORD_ITERATIONS = 600_000
+
+
+def _canonicalize_role(role):
+    """Return the canonical internal role string for known role values."""
+    if role is None:
+        return None
+    normalized = re.sub(r"\s+", " ", str(role).strip())
+    if not normalized:
+        return normalized
+    lookup = normalized.lower()
+    aliases = {
+        ROLE_CUSTOMER.lower(): ROLE_CUSTOMER,
+        ROLE_BUILDER.lower(): ROLE_BUILDER,
+        ROLE_VENDOR.lower(): ROLE_VENDOR,
+        "customer": ROLE_CUSTOMER,
+        "builder": ROLE_BUILDER,
+        "builder / contractor": ROLE_BUILDER,
+        "vendor": ROLE_VENDOR,
+        "dealer": ROLE_VENDOR,
+        "dealer / supplier": ROLE_VENDOR,
+        "supplier": ROLE_VENDOR,
+    }
+    return aliases.get(lookup, normalized)
+
+
+def get_current_role():
+    """Return the authenticated internal role for this session."""
+    return st.session_state.get("user_role") if st.session_state.get("authenticated") else None
+
+
+def get_role_label(role=None):
+    return ROLE_LABELS.get(role or get_current_role(), "")
+
+
+def logout():
+    """Clear authentication state while retaining session accounts and app data."""
+    for key in ("user_role", "authenticated", "authenticated_account", "active_page", "pending_verification"):
+        st.session_state.pop(key, None)
+    st.rerun()
+
+
+def require_role(allowed_roles=None):
+    """Return whether the authenticated session has an allowed internal role."""
+    if allowed_roles is None:
+        allowed_roles = PRIMARY_ROLES
+    return get_current_role() in allowed_roles
+
+
+def _hash_secret(value, salt=None):
+    salt = salt or secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", value.encode("utf-8"), salt, PASSWORD_ITERATIONS)
+    return salt.hex(), digest.hex()
+
+
+def _verify_secret(value, salt_hex, digest_hex):
+    _, candidate = _hash_secret(value, bytes.fromhex(salt_hex))
+    return hmac.compare_digest(candidate, digest_hex)
+
+
+def _valid_email(email):
+    return _normalize_email(email) is not None
+
+
+def _normalize_email(email):
+    """Return a normalized email when it passes local syntax checks."""
+    normalized = email.strip().lower()
+    if normalized.count("@") != 1:
+        return None
+
+    local_part, domain = normalized.split("@")
+    if not local_part or local_part.startswith(".") or local_part.endswith(".") or ".." in local_part:
+        return None
+    if re.fullmatch(r"[a-z0-9.!#$%&'*+/=?^_`{|}~-]+", local_part) is None:
+        return None
+
+    domain_parts = domain.split(".")
+    if len(domain_parts) < 2 or any(
+        re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", part) is None
+        for part in domain_parts
+    ):
+        return None
+    if re.fullmatch(r"[a-z]{2,63}", domain_parts[-1]) is None:
+        return None
+
+    return normalized
+
+
+def _valid_phone(phone):
+    return re.fullmatch(r"[6-9]\d{9}", phone) is not None
+
+
+def _valid_password(password):
+    return (
+        len(password) >= 10
+        and re.search(r"[A-Z]", password)
+        and re.search(r"[a-z]", password)
+        and re.search(r"\d", password)
+        and re.search(r"[^A-Za-z0-9]", password)
+    )
+
+
+def _persisted_accounts_path():
+    return Path(__file__).resolve().with_name("buildatlas_users.json")
+
+
+def _load_persisted_accounts():
+    path = _persisted_accounts_path()
+    if not path.exists():
+        path.write_text("[]\n", encoding="utf-8")
+        return []
+
+    try:
+        with path.open("r", encoding="utf-8") as file:
+            data = json.load(file)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"Authentication storage file is unreadable or malformed: {path}. "
+            "Restore valid JSON or delete the file to initialize a fresh empty store."
+        ) from exc
+
+    if not isinstance(data, list):
+        raise RuntimeError(
+            f"Authentication storage file is invalid: {path}. Expected a JSON list of account objects."
+        )
+
+    return data
+
+
+def _save_persisted_accounts(accounts):
+    path = _persisted_accounts_path()
+    with path.open("w", encoding="utf-8") as file:
+        json.dump(accounts, file, indent=2)
+        file.write("\n")
+
+
+def _accounts():
+    persisted_accounts = _load_persisted_accounts()
+    normalized_persisted = []
+    changed_persisted = False
+    for account in persisted_accounts:
+        if not isinstance(account, dict):
+            normalized_persisted.append(account)
+            continue
+        normalized_account = dict(account)
+        for field in ("email", "phone"):
+            if field not in normalized_account:
+                normalized_account[field] = ""
+                changed_persisted = True
+        canonical_role = _canonicalize_role(normalized_account.get("role"))
+        if canonical_role is not None and canonical_role != normalized_account.get("role"):
+            normalized_account["role"] = canonical_role
+            changed_persisted = True
+        normalized_persisted.append(normalized_account)
+    if changed_persisted:
+        _save_persisted_accounts(normalized_persisted)
+    persisted_accounts = normalized_persisted
+
+    session_accounts = st.session_state.get("auth_accounts")
+    if session_accounts is None:
+        st.session_state["auth_accounts"] = persisted_accounts
+        return st.session_state["auth_accounts"]
+
+    normalized_session_accounts = []
+    for account in session_accounts:
+        if not isinstance(account, dict):
+            normalized_session_accounts.append(account)
+            continue
+        normalized_account = dict(account)
+        for field in ("email", "phone"):
+            if field not in normalized_account:
+                normalized_account[field] = ""
+                changed_persisted = True
+        canonical_role = _canonicalize_role(normalized_account.get("role"))
+        if canonical_role is not None and canonical_role != normalized_account.get("role"):
+            normalized_account["role"] = canonical_role
+            changed_persisted = True
+        normalized_session_accounts.append(normalized_account)
+    session_accounts = normalized_session_accounts
+
+    if session_accounts == [] and persisted_accounts:
+        st.session_state["auth_accounts"] = persisted_accounts
+        return st.session_state["auth_accounts"]
+
+    merged_accounts = [dict(account) for account in persisted_accounts]
+    for account in session_accounts:
+        account_key = (account.get("email"), account.get("phone"))
+        if not any(
+            (existing.get("email"), existing.get("phone")) == account_key
+            for existing in merged_accounts
+        ):
+            merged_accounts.append(dict(account))
+
+    for account in merged_accounts:
+        if isinstance(account, dict):
+            canonical_role = _canonicalize_role(account.get("role"))
+            if canonical_role is not None and canonical_role != account.get("role"):
+                account["role"] = canonical_role
+                changed_persisted = True
+
+    if changed_persisted or merged_accounts != persisted_accounts:
+        _save_persisted_accounts(merged_accounts)
+
+    st.session_state["auth_accounts"] = merged_accounts
+    return merged_accounts
+
+
+def _find_account(identifier):
+    normalized_identifier = identifier.strip()
+    narrowed_email = normalized_identifier.lower()
+    return next(
+        (
+            account for account in _accounts()
+            if isinstance(account, dict)
+            and ((account.get("email") or "").lower() == narrowed_email
+                 or account.get("phone", "") == normalized_identifier)
+        ),
+        None,
+    )
+
+
+def _issue_otp(account):
+    now = time.time()
+    last_sent_at = account.get("otp_last_sent_at", 0)
+    if now - last_sent_at < OTP_RESEND_COOLDOWN_SECONDS:
+        return False, "Please wait before requesting another OTP."
+
+    otp = f"{secrets.randbelow(1_000_000):06d}"
+    salt, digest = _hash_secret(otp)
+    delivered = deliver_otp(account, otp)
+    account["otp_last_sent_at"] = now
+    account["otp_delivery_status"] = delivered
+    if delivered:
+        account["otp_salt"] = salt
+        account["otp_hash"] = digest
+        account["otp_expires_at"] = now + OTP_TTL_SECONDS
+        account["otp_attempts"] = 0
+        account["otp_invalidated"] = False
+        persisted_accounts = _load_persisted_accounts()
+        for persisted_account in persisted_accounts:
+            if (
+                isinstance(persisted_account, dict)
+                and persisted_account.get("email") == account.get("email")
+            ):
+                for field in (
+                    "otp_salt",
+                    "otp_hash",
+                    "otp_expires_at",
+                    "otp_attempts",
+                    "otp_invalidated",
+                    "otp_last_sent_at",
+                    "otp_delivery_status",
+                ):
+                    persisted_account[field] = account[field]
+                break
+        _save_persisted_accounts(persisted_accounts)
+        st.session_state["pending_verification"] = account.get("email", "")
+        return True, ""
+    return False, "SMTP email delivery failed. Check the SMTP server configuration and try again."
+
+
+def _smtp_setting(name, default=""):
+    """Read a secret from the environment first, then Streamlit secrets."""
+    value = os.getenv(name)
+    if value is not None:
+        return value.strip()
+    try:
+        return str(st.secrets.get(name, default)).strip()
+    except (FileNotFoundError, KeyError, RuntimeError):
+        return default
+
+
+def get_smtp_configuration_status():
+    """Return only boolean SMTP configuration status, never secret values."""
+    settings = {
+        "SMTP_HOST": _smtp_setting("SMTP_HOST"),
+        "SMTP_PORT": _smtp_setting("SMTP_PORT", "587"),
+        "SMTP_USERNAME": _smtp_setting("SMTP_USERNAME"),
+        "SMTP_PASSWORD": _smtp_setting("SMTP_PASSWORD"),
+        "SMTP_FROM_EMAIL": _smtp_setting("SMTP_FROM_EMAIL"),
+    }
+    return {name: bool(value) for name, value in settings.items()}
+
+
+def deliver_otp(account, otp):
+    """Send an OTP through configured SMTP without exposing or persisting it."""
+    settings = {
+        "host": _smtp_setting("SMTP_HOST"),
+        "username": _smtp_setting("SMTP_USERNAME"),
+        "password": _smtp_setting("SMTP_PASSWORD"),
+        "sender": _smtp_setting("SMTP_FROM_EMAIL"),
+    }
+    try:
+        port = int(_smtp_setting("SMTP_PORT", "587"))
+    except ValueError:
+        print(f"SMTP DEBUG: invalid SMTP_PORT value: {_smtp_setting('SMTP_PORT', '587')!r}")
+        return False
+    missing_settings = [name for name, value in settings.items() if not value]
+    if missing_settings:
+        print(f"SMTP DEBUG: missing/empty settings: {missing_settings}")
+        return False
+
+    message = EmailMessage()
+    message["Subject"] = "BuildAtlas email verification"
+    message["From"] = settings["sender"]
+    message["To"] = account.get("email", "")
+    message.set_content(
+        "Your BuildAtlas verification code is valid for five minutes. "
+        "Enter it in the verification screen to activate your account.\n\n"
+        f"Verification code: {otp}"
+    )
+    try:
+        with smtplib.SMTP(settings["host"], port, timeout=15) as smtp:
+            smtp.starttls()
+            smtp.login(settings["username"], settings["password"])
+            refused_recipients = smtp.send_message(message)
+            if refused_recipients:
+                print(f"SMTP DEBUG: recipients refused: {refused_recipients}")
+                return False
+        return True
+    except (OSError, smtplib.SMTPException) as e:
+        print(f"SMTP DEBUG ERROR: {type(e).__name__}: {e}")
+        return False
+
+
+def _start_authenticated_session(account):
+    role = account.get("role")
+    profile = account.get("profile", {})
+    st.session_state["authenticated_account"] = account.get("email", "")
+    if role == ROLE_CUSTOMER:
+        st.session_state.update({"customer_name": profile.get("full_name", "Customer"), "customer_email": account.get("email", ""), "customer_phone": account.get("phone", "")})
+    elif role == ROLE_BUILDER:
+        st.session_state.update({"builder_name": profile.get("contact_name", "Build Partner"), "builder_company": profile.get("business_name", "BuildAtlas Construction"), "builder_phone": account.get("phone", "")})
+    else:
+        st.session_state.update({"dealer_business_name": profile.get("business_name", "BuildAtlas Materials Supply"), "dealer_contact_name": profile.get("contact_name", "Material Partner"), "dealer_phone": account.get("phone", "")})
+    st.session_state["user_role"] = role
+    st.session_state["authenticated"] = True
+    default_pages = {ROLE_CUSTOMER: "🏠  Customer Dashboard", ROLE_BUILDER: "🏗️  Builder Dashboard", ROLE_VENDOR: "🛒  Dealer Dashboard"}
+    st.session_state["active_page"] = default_pages[role]
+    st.rerun()
+
+
+def _render_otp_verification():
+    email = st.session_state.get("pending_verification")
+    account = next((item for item in _accounts() if isinstance(item, dict) and item.get("email", "") == email), None)
+    if account is None:
+        st.session_state.pop("pending_verification", None)
+        return
+    st.markdown("### Verify your account")
+    st.caption("Enter the OTP sent to your registered contact. The code expires shortly.")
+    if not account.get("otp_delivery_status"):
+        status = get_smtp_configuration_status()
+        missing = ", ".join(name for name, is_set in status.items() if not is_set)
+        if missing:
+            st.error(f"Email verification is unavailable until SMTP credentials are configured. Missing: {missing}.")
+        else:
+            st.error("SMTP email delivery failed. Check the SMTP server configuration and request a new OTP.")
+    with st.form("otp_verification_form"):
+        otp = st.text_input("One-time password", max_chars=6, placeholder="6-digit OTP")
+        verify = st.form_submit_button("Verify OTP", type="primary", use_container_width=True)
+    if verify:
+        otp_clean = otp.strip()
+        if time.time() > account.get("otp_expires_at", 0):
+            st.error("This OTP has expired. Request a new OTP.")
+        elif account.get("otp_invalidated") or account.get("otp_attempts", 0) >= OTP_MAX_ATTEMPTS:
+            account["otp_invalidated"] = True
+            for key in ("otp_salt", "otp_hash", "otp_expires_at"):
+                account.pop(key, None)
+            st.error("Too many OTP attempts. Request a new OTP.")
+        elif not account.get("otp_delivery_status"):
+            status = get_smtp_configuration_status()
+            missing = ", ".join(name for name, is_set in status.items() if not is_set)
+            if missing:
+                st.error(f"Email verification is unavailable until SMTP credentials are configured. Missing: {missing}.")
+            else:
+                st.error("SMTP email delivery failed. Request a new OTP after checking the SMTP configuration.")
+        elif (
+            not account.get("otp_salt")
+            or not account.get("otp_hash")
+            or not re.fullmatch(r"\d{6}", otp_clean)
+            or not _verify_secret(otp_clean, account.get("otp_salt", ""), account.get("otp_hash", ""))
+        ):
+            print(f"OTP DEBUG: entered_len={len(otp_clean)}, "
+                  f"regex_match={bool(re.fullmatch(r'\d{{6}}', otp_clean))}, "
+                  f"attempts={account.get('otp_attempts', 0)}, "
+                  f"expires_in={account.get('otp_expires_at', 0) - time.time():.0f}s, "
+                  f"delivery_status={account.get('otp_delivery_status')}")
+            account["otp_attempts"] = account.get("otp_attempts", 0) + 1
+            if account["otp_attempts"] >= OTP_MAX_ATTEMPTS:
+                account["otp_invalidated"] = True
+                for key in ("otp_salt", "otp_hash", "otp_expires_at"):
+                    account.pop(key, None)
+                st.error("Too many OTP attempts. Request a new OTP.")
+            else:
+                st.error("Invalid OTP. If you requested the code more than once, make sure you're using the code from the MOST RECENT email — older codes are automatically invalidated.")
+        else:
+            account["verified"] = True
+            otp_fields = ("otp_salt", "otp_hash", "otp_expires_at", "otp_attempts")
+            for key in otp_fields:
+                account.pop(key, None)
+            persisted_accounts = _load_persisted_accounts()
+            for persisted_account in persisted_accounts:
+                if (
+                    isinstance(persisted_account, dict)
+                    and persisted_account.get("email") == account.get("email")
+                ):
+                    persisted_account["verified"] = True
+                    for key in otp_fields:
+                        persisted_account.pop(key, None)
+                    break
+            _save_persisted_accounts(persisted_accounts)
+            st.session_state.pop("pending_verification", None)
+            st.success("Account verified. Signing you in...")
+            _start_authenticated_session(account)
+    if st.button("Resend OTP", key="resend_otp"):
+        delivered, message = _issue_otp(account)
+        if delivered:
+            st.success("A new OTP was sent.")
+        else:
+            st.warning(message)
+
+
+def show_login_screen():
+    """Render strict session-only login, registration, and OTP verification."""
+    st.markdown(
+        """
+        <div style="max-width:720px;margin:8vh auto 0;text-align:center;">
+          <div style="font-size:56px;margin-bottom:12px;">🏗️</div>
+          <h1 class="main-header">Welcome to BuildAtlas</h1>
+          <p class="sub-header">Secure access for construction teams and customers</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if st.session_state.get("pending_verification"):
+        _render_otp_verification()
+        return
+
+    access_mode = st.radio("Account access", ("Login", "Register"), horizontal=True, key="access_mode")
+    role_label = st.selectbox("Choose your role", tuple(ROLE_LABELS.values()), index=None, placeholder="Select a role", key="role_selector")
+    role = next((key for key, label in ROLE_LABELS.items() if label == role_label), None)
+    if role is None:
+        st.info("Select a role to continue.")
+        return
+
+    if os.getenv("DEBUG_AUTH") == "1":
+        with st.expander("Debug auth store", expanded=False):
+            try:
+                accounts = _load_persisted_accounts()
+            except Exception as exc:  # pragma: no cover - development-only diagnostics
+                st.write(f"Authentication store could not be loaded: {exc}")
+                accounts = []
+            if not accounts:
+                st.write("No accounts found.")
+            else:
+                for account in accounts:
+                    if not isinstance(account, dict):
+                        continue
+                    email = account.get("email")
+                    role = _canonicalize_role(account.get("role"))
+                    if email:
+                        st.write(f"{email} | {role}")
+
+    if access_mode == "Login":
+        with st.form("login_form"):
+            identifier = st.text_input("Email or phone *")
+            password = st.text_input("Password *", type="password")
+            submit_login = st.form_submit_button("Log in", type="primary", use_container_width=True)
+        if submit_login:
+            account = _find_account(identifier)
+            if account is None:
+                if os.getenv("DEBUG_AUTH") == "1":
+                    print("DEBUG_AUTH: account not found for login attempt")
+                st.error("Invalid credentials for the selected role.")
+            elif _canonicalize_role(account.get("role")) != _canonicalize_role(role):
+                if os.getenv("DEBUG_AUTH") == "1":
+                    print(f"DEBUG_AUTH: role mismatch for login attempt: stored={account.get('role')!r}, selected={role!r}")
+                st.error("Invalid credentials for the selected role.")
+            elif (
+                not account.get("password_salt")
+                or not account.get("password_hash")
+                or not _verify_secret(password, account.get("password_salt", ""), account.get("password_hash", ""))
+            ):
+                if os.getenv("DEBUG_AUTH") == "1":
+                    print("DEBUG_AUTH: password mismatch for login attempt")
+                st.error("Invalid credentials for the selected role.")
+            elif not account.get("verified"):
+                delivered, delivery_message = _issue_otp(account)
+                st.warning("Please verify your email before logging in.")
+                if not delivered:
+                    st.info(delivery_message)
+                st.rerun()
+            else:
+                _start_authenticated_session(account)
+        return
+
+    st.caption("Registration and account data are stored only in this Streamlit session.")
+    with st.form("registration_form"):
+        full_name = st.text_input("Full name *")
+        email = st.text_input("Email address *")
+        phone = st.text_input("Phone number *", placeholder="10-digit Indian mobile number")
+        password = st.text_input("Password *", type="password", help="Use at least 10 characters with uppercase, lowercase, a number, and a symbol.")
+        confirm_password = st.text_input("Confirm password *", type="password")
+        submitted = st.form_submit_button("Create Account", type="primary", use_container_width=True)
+    if submitted:
+        normalized_email = _normalize_email(email)
+        normalized_phone = phone.strip()
+        errors = []
+        if not full_name.strip():
+            errors.append("Full name is required.")
+        if normalized_email is None:
+            errors.append("Enter a valid email address with a valid domain.")
+        if not _valid_phone(normalized_phone):
+            errors.append("Enter a valid 10-digit Indian mobile number.")
+        if not _valid_password(password):
+            errors.append("Password must be 10+ characters with uppercase, lowercase, number, and symbol.")
+        if password != confirm_password:
+            errors.append("Password and confirm password must match.")
+        if any(account.get("email", "") == normalized_email for account in _accounts() if isinstance(account, dict)):
+            errors.append("An account with this email already exists.")
+        if any(account.get("phone", "") == normalized_phone for account in _accounts() if isinstance(account, dict)):
+            errors.append("An account with this phone number already exists.")
+        if errors:
+            for error in errors:
+                st.error(error)
+            return
+
+        password_salt, password_hash = _hash_secret(password)
+        account = {
+            "role": _canonicalize_role(role),
+            "email": normalized_email,
+            "phone": normalized_phone,
+            "password_salt": password_salt,
+            "password_hash": password_hash,
+            "verified": False,
+            "profile": {"full_name": full_name.strip()},
+        }
+        accounts = _accounts()
+        try:
+            accounts.append(account)
+            _save_persisted_accounts(accounts)
+            reloaded_accounts = _load_persisted_accounts()
+            persisted_emails = {item.get("email") for item in reloaded_accounts if isinstance(item, dict) and item.get("email")}
+            if account.get("email", "") not in persisted_emails:
+                st.error("Account could not be saved. Please try again or contact support.")
+                return
+        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            st.error(f"Account could not be saved: {exc}")
+            return
+
+        st.session_state["auth_accounts"] = accounts
+        delivery_configured, delivery_message = _issue_otp(account)
+        st.success("Account created as unverified. Verify the OTP before logging in.")
+        if not delivery_configured:
+            st.warning(delivery_message)
+        st.rerun()
+
+
+ROLE_PAGE_CONFIG = {
+    "CUSTOMER": (
+        ("🏠  Customer Dashboard", "🏠", customer_dashboard),
+        ("👷  Find Builder", "👷", builder_marketplace),
+        ("🛠️  Find Service Provider", "🛠️", find_service_provider),
+        ("🧱  Material Marketplace", "🧱", material_marketplace),
+        ("💰  Cost Prediction", "💰", cost_prediction),
+        ("🧾  Bill Scanner", "🧾", bill_scanner),
+        ("🏗️  Construction Progress", "🏗️", construction_progress_tracker),
+        ("🌦️  Weather", "🌦️", weather_alerts),
+        ("🤖  AI Chatbot", "🤖", chatbot),
+        ("🧭  Vastu", "🧭", vastu_page),
+        ("📋  Requests / Quotations", "📋", customer_requests),
+        ("👤  Profile", "👤", customer_profile),
+    ),
+    "BUILDER / CONTRACTOR": (
+        ("🏗️  Builder Dashboard", "🏗️", builder_dashboard),
+        ("🏗️  Projects", "🏗️", builder_projects),
+        ("👥  Customer Leads", "👥", builder_leads),
+        ("📊  Progress", "📊", construction_progress_tracker),
+        ("💰  Cost & Estimates", "💰", cost_prediction),
+        ("🧱  Material Requirements", "🧱", builder_material_requirements),
+        ("🛒  Suppliers", "🛒", builder_suppliers),
+        ("📋  Quotations", "📋", builder_quotations),
+        ("👷  Labour Manager", "👷", labour),
+        ("📁  Documents", "📁", builder_documents),
+        ("⭐  Reviews", "⭐", builder_reviews),
+        ("👤  Profile", "👤", builder_profile),
+    ),
+    "DEALER / SUPPLIER": (
+        ("🛒  Dealer Dashboard", "🛒", dealer_dashboard),
+        ("📦  Product Catalogue", "📦", dealer_catalogue),
+        ("📊  Inventory", "📊", dealer_inventory),
+        ("💬  Enquiries", "💬", dealer_enquiries),
+        ("📋  Quotations", "📋", dealer_quotations),
+        ("🧾  Orders", "🧾", dealer_orders),
+        ("🚚  Delivery", "🚚", dealer_delivery_management),
+        ("📈  Analytics", "📈", dealer_sales_analytics),
+        ("⭐  Reviews", "⭐", dealer_reviews),
+        ("🏢  Profile", "🏢", dealer_profile),
+    ),
+}
+
+
+def get_role_pages(role=None):
+    """Return the centrally configured pages available to a role."""
+    return ROLE_PAGE_CONFIG.get(role or get_current_role(), ())
+
+
+def get_page_config(page_label, role=None):
+    """Find a page configuration only if it is allowed for the current role."""
+    return next((page for page in get_role_pages(role) if page[0] == page_label), None)
+
+
+def show_access_restricted(page_label):
+    """Block a page that is not assigned to the current role."""
+    st.error("Access Restricted")
+    st.markdown(
+        f'<div class="ba-card"><div class="ba-card-title">This page is not available for your role</div>'
+        f'<div style="color:#b0c9e3;font-size:14px;">Your current role cannot open <strong>{page_label}</strong>.</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
 # ═══════════════════════════════════════════════
 def main():
+    if not require_role():
+        show_login_screen()
+        return
+
     # Sidebar branding
     st.sidebar.markdown("""
     <div class="sidebar-logo">
@@ -3585,36 +5575,24 @@ def main():
     </div>
     """, unsafe_allow_html=True)
 
+    st.sidebar.markdown(
+        f'<div style="margin-top:18px;color:#cdd5de;font-size:11px;letter-spacing:1px;text-transform:uppercase;">Role: {get_current_role()}</div>',
+        unsafe_allow_html=True,
+    )
+    if st.sidebar.button("Log out", key="logout_button", use_container_width=True):
+        logout()
+
     if "active_page" not in st.session_state:
-        st.session_state["active_page"] = "📊  Dashboard"
+        st.session_state["active_page"] = get_role_pages()[0][0]
 
-    pages = {
-        "📊  Dashboard":                  dashboard,
-        "👷  Find Builder":               builder_marketplace,
-        "💰  Cost Prediction":           cost_prediction,
-        "🧾  Bill Scanner":              bill_scanner,
-        "🧠  AI Conceptual Layout Generator": concept_layout_generator_page,
-        "🏗️  Construction Progress":     construction_progress_tracker,
-        "🌦️  Weather Live":              weather_alerts,
-        "🤖  AI Chatbot":                chatbot,
-        "👷  Labour Manager":            labour,
-        "🧭  Vastu Intelligence":        vastu_page,
-        "🧱  Material Marketplace":      material_marketplace,
-    }
+    role_pages = get_role_pages()
+    pages = {page_label: page_function for page_label, _, page_function in role_pages}
+    quick_access_pages = [(page_label, icon, page_label) for page_label, icon, _ in role_pages]
+    requested_page = st.session_state["active_page"]
+    restricted_page = requested_page if requested_page not in pages else None
 
-    quick_access_pages = [
-        ("📊  Dashboard", "📊", "Dashboard"),
-        ("👷  Find Builder", "👷", "Find Builder"),
-        ("💰  Cost Prediction", "💰", "Cost Calculator"),
-        ("🧾  Bill Scanner", "🧾", "Bill Scanner"),
-        ("🧠  AI Conceptual Layout Generator", "🧠", "AI Conceptual Layout Generator"),
-        ("🏗️  Construction Progress", "🏗️", "Construction Progress"),
-        ("🌦️  Weather Live", "🌦️", "Weather Live"),
-        ("🤖  AI Chatbot", "🤖", "AI Chatbot"),
-        ("👷  Labour Manager", "👷", "Labour Manager"),
-        ("🧭  Vastu Intelligence", "🧭", "Vastu Intelligence"),
-        ("🧱  Material Marketplace", "🧱", "Material Marketplace"),
-    ]
+    if restricted_page is not None:
+        st.session_state["active_page"] = quick_access_pages[0][0]
 
     active_page = st.session_state["active_page"]
     active_index = next((i + 1 for i, (page_label, _, _) in enumerate(quick_access_pages) if page_label == active_page), 1)
@@ -3702,7 +5680,14 @@ def main():
         </div>
         """, unsafe_allow_html=True)
    
-    pages[st.session_state["active_page"]]()
+    if restricted_page is not None:
+        show_access_restricted(restricted_page)
+    else:
+        page_config = get_page_config(st.session_state["active_page"])
+        if page_config is None:
+            show_access_restricted(st.session_state["active_page"])
+        else:
+            page_config[2]()
 
 if __name__ == "__main__":
     main()
