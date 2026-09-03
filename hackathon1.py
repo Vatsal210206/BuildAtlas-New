@@ -5390,7 +5390,7 @@ def _find_account(identifier):
 
 def _issue_otp(account):
     now = time.time()
-    last_sent_at = account.get("otp_last_sent_at", 0)
+    last_sent_at = account.get("otp_last_sent_at") or 0
     st.session_state["pending_verification"] = account.get("email", "")
     st.session_state["pending_verification_account"] = dict(account)
     if now - last_sent_at < OTP_RESEND_COOLDOWN_SECONDS:
@@ -5398,45 +5398,72 @@ def _issue_otp(account):
 
     otp = f"{secrets.randbelow(1_000_000):06d}"
     salt, digest = _hash_secret(otp)
-    delivered = deliver_otp(account, otp)
-    account["otp_last_sent_at"] = now
-    account["otp_delivery_status"] = delivered
-    if delivered:
-        account["otp_salt"] = salt
-        account["otp_hash"] = digest
-        account["otp_expires_at"] = now + OTP_TTL_SECONDS
-        account["otp_attempts"] = 0
-        account["otp_invalidated"] = False
-        st.session_state["pending_verification_account"] = dict(account)
-        if db.is_configured():
-            db.update_user(account["id"], {
-                "otp_salt": account["otp_salt"], "otp_hash": account["otp_hash"],
-                "otp_expires_at": datetime.fromtimestamp(account["otp_expires_at"], tz=timezone.utc).isoformat(),
-                "otp_attempts": 0, "otp_invalidated": False,
-                "otp_last_sent_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
-                "otp_delivery_status": True,
-            })
-            return True, ""
+    expires_at = now + OTP_TTL_SECONDS
+    account.update({
+        "otp_salt": salt,
+        "otp_hash": digest,
+        "otp_expires_at": expires_at,
+        "otp_attempts": 0,
+        "otp_invalidated": False,
+        "otp_delivery_status": False,
+        "otp_last_sent_at": 0,
+    })
+    pending_fields = {
+        "otp_salt": salt,
+        "otp_hash": digest,
+        "otp_expires_at": datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat(),
+        "otp_attempts": 0,
+        "otp_invalidated": False,
+        "otp_last_sent_at": None,
+        "otp_delivery_status": False,
+    }
+    if db.is_configured():
+        db.update_user(account["id"], pending_fields)
+    else:
         persisted_accounts = _load_persisted_accounts()
         for persisted_account in persisted_accounts:
-            if (
-                isinstance(persisted_account, dict)
-                and persisted_account.get("email") == account.get("email")
-            ):
-                for field in (
-                    "otp_salt",
-                    "otp_hash",
-                    "otp_expires_at",
-                    "otp_attempts",
-                    "otp_invalidated",
-                    "otp_last_sent_at",
-                    "otp_delivery_status",
-                ):
-                    persisted_account[field] = account[field]
+            if isinstance(persisted_account, dict) and persisted_account.get("email") == account.get("email"):
+                persisted_account.update({
+                    "otp_salt": account["otp_salt"], "otp_hash": account["otp_hash"],
+                    "otp_expires_at": account["otp_expires_at"], "otp_attempts": 0,
+                    "otp_invalidated": False, "otp_last_sent_at": 0, "otp_delivery_status": False,
+                })
                 break
         _save_persisted_accounts(persisted_accounts)
-        return True, ""
-    return False, "SMTP email delivery failed. Check the SMTP server configuration and try again."
+
+    delivered = deliver_otp(account, otp)
+    if not delivered:
+        account.update({"otp_salt": None, "otp_hash": None, "otp_expires_at": 0, "otp_delivery_status": False, "otp_last_sent_at": 0})
+        clear_fields = {"otp_salt": None, "otp_hash": None, "otp_expires_at": None, "otp_last_sent_at": None, "otp_delivery_status": False}
+        if db.is_configured():
+            db.update_user(account["id"], clear_fields)
+        else:
+            persisted_accounts = _load_persisted_accounts()
+            for persisted_account in persisted_accounts:
+                if isinstance(persisted_account, dict) and persisted_account.get("email") == account.get("email"):
+                    persisted_account.update(clear_fields)
+                    break
+            _save_persisted_accounts(persisted_accounts)
+        st.session_state["pending_verification_account"] = dict(account)
+        return False, "SMTP email delivery failed. Check the SMTP server configuration and try again."
+
+    account["otp_last_sent_at"] = now
+    account["otp_delivery_status"] = True
+    delivered_fields = {
+        "otp_last_sent_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+        "otp_delivery_status": True,
+    }
+    if db.is_configured():
+        db.update_user(account["id"], delivered_fields)
+    else:
+        persisted_accounts = _load_persisted_accounts()
+        for persisted_account in persisted_accounts:
+            if isinstance(persisted_account, dict) and persisted_account.get("email") == account.get("email"):
+                persisted_account.update({"otp_last_sent_at": account["otp_last_sent_at"], "otp_delivery_status": True})
+                break
+        _save_persisted_accounts(persisted_accounts)
+    st.session_state["pending_verification_account"] = dict(account)
+    return True, ""
 
 
 def _smtp_setting(name, default=""):
@@ -5473,11 +5500,14 @@ def deliver_otp(account, otp):
     try:
         port = int(_smtp_setting("SMTP_PORT", "587"))
     except ValueError:
-        print(f"SMTP DEBUG: invalid SMTP_PORT value: {_smtp_setting('SMTP_PORT', '587')!r}")
+        print("SMTP configuration error: SMTP_PORT must be an integer.")
+        return False
+    if not 1 <= port <= 65535:
+        print("SMTP configuration error: SMTP_PORT is outside the valid range.")
         return False
     missing_settings = [name for name, value in settings.items() if not value]
     if missing_settings:
-        print(f"SMTP DEBUG: missing/empty settings: {missing_settings}")
+        print(f"SMTP configuration error: missing {', '.join(missing_settings)}.")
         return False
 
     message = EmailMessage()
@@ -5495,11 +5525,11 @@ def deliver_otp(account, otp):
             smtp.login(settings["username"], settings["password"])
             refused_recipients = smtp.send_message(message)
             if refused_recipients:
-                print(f"SMTP DEBUG: recipients refused: {refused_recipients}")
+                print("SMTP delivery failed: recipient was refused.")
                 return False
         return True
-    except (OSError, smtplib.SMTPException) as e:
-        print(f"SMTP DEBUG ERROR: {type(e).__name__}: {e}")
+    except (OSError, smtplib.SMTPException):
+        print("SMTP delivery failed while connecting or authenticating.")
         return False
 
 

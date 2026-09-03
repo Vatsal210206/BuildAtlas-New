@@ -8,6 +8,7 @@ use the same code path.
 
 from datetime import datetime, timezone
 import os
+import re
 from typing import Any, Dict, Iterable, List, Optional
 
 
@@ -17,6 +18,14 @@ class DatabaseConfigurationError(RuntimeError):
 
 class DatabaseOperationError(RuntimeError):
     """Raised when a Supabase operation cannot be completed."""
+
+
+USER_COLUMNS = frozenset({
+    "id", "email", "phone", "password_hash", "password_salt", "role", "verified",
+    "otp_salt", "otp_hash", "otp_expires_at", "otp_attempts", "otp_invalidated",
+    "otp_last_sent_at", "otp_delivery_status", "created_at",
+})
+USER_UPDATE_COLUMNS = USER_COLUMNS - {"id", "created_at"}
 
 
 def _setting(name: str) -> str:
@@ -108,7 +117,27 @@ def create_user(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def update_user(user_id: str, fields: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    return _one(connect().table("users").update(fields).eq("id", user_id).execute())
+    unsupported = set(fields) - USER_UPDATE_COLUMNS
+    if unsupported:
+        names = ", ".join(sorted(unsupported))
+        raise DatabaseOperationError(f"Unsupported users table field(s): {names}")
+    client = connect()
+    try:
+        response = client.table("users").update(dict(fields)).eq("id", user_id).execute()
+    except Exception as exc:
+        code = getattr(exc, "code", None)
+        message = str(getattr(exc, "message", exc))
+        missing_column = re.search(r"Could not find the '([^']+)' column", message)
+        if code != "PGRST204" or not missing_column:
+            raise
+        column = missing_column.group(1)
+        if column not in fields or column not in USER_UPDATE_COLUMNS:
+            raise
+        compatible_fields = {key: value for key, value in fields.items() if key != column}
+        if not compatible_fields:
+            return None
+        response = client.table("users").update(compatible_fields).eq("id", user_id).execute()
+    return _one(response)
 
 
 def get_profile(user: Dict[str, Any]) -> Dict[str, Any]:
