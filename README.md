@@ -24,6 +24,7 @@ BuildAtlas AI is an end-to-end AI-powered construction planning platform designe
 * Plotly
 * Scikit-Learn
 * Google Gemini AI
+* Supabase PostgreSQL
 
 ## Project Structure
 
@@ -39,13 +40,31 @@ BuildAtlas AI is an end-to-end AI-powered construction planning platform designe
 
 ## How to Run
 
-1. Install existing Streamlit dependencies:
+1. Install dependencies:
 
-pip install -r requirement.txt
+pip install -r requirements.txt
 
 2. Run the application:
 
-streamlit run hackathon.py
+streamlit run hackathon1.py
+
+### Supabase setup
+
+Run [`supabase_schema.sql`](supabase_schema.sql) in the Supabase SQL editor. Add these values to `.streamlit/secrets.toml` locally and to Streamlit Community Cloud secrets:
+
+```toml
+SUPABASE_URL = "https://your-project.supabase.co"
+SUPABASE_SERVICE_ROLE_KEY = "your-server-side-key"
+```
+
+The app uses Supabase as the authoritative store for accounts, role profiles, products, inventory, enquiries, quotations, orders, deliveries, reviews, and project quote requests. Passwords and OTPs are never stored in plaintext. `buildatlas_users.json` and `buildatlas_quote_requests.json` are retained only for an explicitly enabled local migration fallback:
+
+```powershell
+$env:BUILDATLAS_ALLOW_LOCAL_FILE_FALLBACK = "true"
+```
+
+Do not enable that fallback in production. Do not commit `.streamlit/secrets.toml` or `.env`.
+
 
 ## Migration Foundation
 

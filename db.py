@@ -30,16 +30,21 @@ def _setting(name: str) -> str:
         return ""
 
 
+def _database_key() -> str:
+    """Return the server-side Supabase key, preferring the explicit name."""
+    return _setting("SUPABASE_SERVICE_ROLE_KEY") or _setting("SUPABASE_KEY")
+
+
 def is_configured() -> bool:
-    return bool(_setting("SUPABASE_URL") and _setting("SUPABASE_KEY"))
+    return bool(_setting("SUPABASE_URL") and _database_key())
 
 
 def connect():
     url = _setting("SUPABASE_URL")
-    key = _setting("SUPABASE_KEY")
+    key = _database_key()
     if not url or not key:
         raise DatabaseConfigurationError(
-            "Supabase is not configured. Set SUPABASE_URL and SUPABASE_KEY in Streamlit secrets."
+            "Supabase is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Streamlit secrets."
         )
     try:
         from supabase import create_client

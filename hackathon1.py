@@ -5171,7 +5171,7 @@ def get_role_label(role=None):
 
 def logout():
     """Clear authentication state while retaining session accounts and app data."""
-    for key in ("user_role", "authenticated", "authenticated_account", "active_page", "pending_verification"):
+    for key in ("user_role", "authenticated", "authenticated_account", "active_page", "pending_verification", "pending_verification_account"):
         st.session_state.pop(key, None)
     st.rerun()
 
@@ -5391,6 +5391,8 @@ def _find_account(identifier):
 def _issue_otp(account):
     now = time.time()
     last_sent_at = account.get("otp_last_sent_at", 0)
+    st.session_state["pending_verification"] = account.get("email", "")
+    st.session_state["pending_verification_account"] = dict(account)
     if now - last_sent_at < OTP_RESEND_COOLDOWN_SECONDS:
         return False, "Please wait before requesting another OTP."
 
@@ -5405,6 +5407,7 @@ def _issue_otp(account):
         account["otp_expires_at"] = now + OTP_TTL_SECONDS
         account["otp_attempts"] = 0
         account["otp_invalidated"] = False
+        st.session_state["pending_verification_account"] = dict(account)
         if db.is_configured():
             db.update_user(account["id"], {
                 "otp_salt": account["otp_salt"], "otp_hash": account["otp_hash"],
@@ -5413,7 +5416,6 @@ def _issue_otp(account):
                 "otp_last_sent_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
                 "otp_delivery_status": True,
             })
-            st.session_state["pending_verification"] = account.get("email", "")
             return True, ""
         persisted_accounts = _load_persisted_accounts()
         for persisted_account in persisted_accounts:
@@ -5433,7 +5435,6 @@ def _issue_otp(account):
                     persisted_account[field] = account[field]
                 break
         _save_persisted_accounts(persisted_accounts)
-        st.session_state["pending_verification"] = account.get("email", "")
         return True, ""
     return False, "SMTP email delivery failed. Check the SMTP server configuration and try again."
 
@@ -5521,9 +5522,14 @@ def _start_authenticated_session(account):
 
 def _render_otp_verification():
     email = st.session_state.get("pending_verification")
-    account = next((item for item in _accounts() if isinstance(item, dict) and item.get("email", "") == email), None)
+    account = st.session_state.get("pending_verification_account")
+    if db.is_configured() and email:
+        account = _find_account(email)
+    if account is None:
+        account = next((item for item in _accounts() if isinstance(item, dict) and item.get("email", "") == email), None)
     if account is None:
         st.session_state.pop("pending_verification", None)
+        st.session_state.pop("pending_verification_account", None)
         return
     st.markdown("### Verify your account")
     st.caption("Enter the OTP sent to your registered contact. The code expires shortly.")
@@ -5581,6 +5587,11 @@ def _render_otp_verification():
                 account.pop(key, None)
             if db.is_configured():
                 db.update_user(account["id"], {"verified": True, "otp_salt": None, "otp_hash": None, "otp_expires_at": None, "otp_attempts": 0, "otp_invalidated": False})
+                updated_account = _find_account(account.get("email", ""))
+                if updated_account is None:
+                    st.error("Account verification succeeded, but the account could not be reloaded.")
+                    return
+                account = updated_account
             else:
                 persisted_accounts = _load_persisted_accounts()
                 for persisted_account in persisted_accounts:
@@ -5591,6 +5602,7 @@ def _render_otp_verification():
                         break
                 _save_persisted_accounts(persisted_accounts)
             st.session_state.pop("pending_verification", None)
+            st.session_state.pop("pending_verification_account", None)
             st.success("Account verified. Signing you in...")
             _start_authenticated_session(account)
     if st.button("Resend OTP", key="resend_otp"):
@@ -5671,6 +5683,7 @@ def show_login_screen():
                     print("DEBUG_AUTH: password mismatch for login attempt")
                 st.error("Invalid credentials for the selected role.")
             elif not account.get("verified"):
+                st.session_state["pending_verification_account"] = dict(account)
                 delivered, delivery_message = _issue_otp(account)
                 st.warning("Please verify your email before logging in.")
                 if not delivered:
@@ -5732,6 +5745,7 @@ def show_login_screen():
                 profile_data = {"full_name": full_name.strip(), "business_name": full_name.strip(), "contact_name": full_name.strip(), "phone": normalized_phone}
                 db.create_profile(account["role"], created_user["id"], profile_data)
                 account.update(created_user, db_user_id=created_user["id"], profile=profile_data)
+                st.session_state["pending_verification_account"] = dict(account)
             else:
                 accounts = _accounts()
                 accounts.append(account)
