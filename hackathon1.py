@@ -4836,6 +4836,15 @@ def dealer_dashboard():
 
 def dealer_catalogue():
     state = _dealer_state()
+    product_defaults = {
+        "id": "", "name": "", "category": "", "brand": "", "supplier": "",
+        "price": 0.0, "unit": "", "stock": 0, "delivery_days": 0, "rating": 0.0,
+    }
+    normalized_products = []
+    for product in state.get("dealer_products", []):
+        normalized_product = {**product_defaults, **(product if isinstance(product, dict) else {})}
+        normalized_products.append(normalized_product)
+    state["dealer_products"] = normalized_products
     st.markdown('<h1 class="main-header">📦 Product Catalogue</h1>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">Add, edit, remove, and search products you supply</p>', unsafe_allow_html=True)
     with st.expander("➕ Add New Product"):
@@ -4858,7 +4867,10 @@ def dealer_catalogue():
                         state["dealer_products"].append({"id": f"PR-{uuid.uuid4().hex[:8].upper()}", "name": name.strip(), "category": category.strip(), "brand": brand.strip() or "Own brand", "supplier": state.get("dealer_business_name", "Vendor catalogue"), "price": float(price), "unit": unit.strip() or "per piece", "stock": int(stock), "delivery_days": int(lead_time), "rating": 0.0})
                     _dealer_add_activity(f"Product added: {name.strip()}")
                     st.success("Product added to your session catalogue.")
-    products = pd.DataFrame(state["dealer_products"])
+    product_columns = ["id", "name", "category", "brand", "price", "unit", "stock", "delivery_days"]
+    products = pd.DataFrame(state["dealer_products"], columns=product_columns).reindex(columns=product_columns)
+    for column in ("name", "category", "brand", "unit"):
+        products[column] = products[column].fillna("").astype(str)
     category_filter = st.selectbox("Category", ["All"] + sorted(products["category"].unique().tolist()), key="dealer_catalogue_category")
     search = st.text_input("Search products", placeholder="Product or brand", key="dealer_catalogue_search")
     filtered = products if category_filter == "All" else products[products["category"] == category_filter]
