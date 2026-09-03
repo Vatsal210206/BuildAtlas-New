@@ -5467,51 +5467,70 @@ def _issue_otp(account):
 
 
 def _smtp_setting(name, default=""):
-    """Read a secret from the environment first, then Streamlit secrets."""
-    value = os.getenv(name)
-    if value is not None:
-        return value.strip()
+    """Read a top-level Streamlit secret, with environment fallback."""
     try:
-        return str(st.secrets.get(name, default)).strip()
+        value = st.secrets.get(name)
+        if value is not None and str(value).strip():
+            return str(value).strip()
     except (FileNotFoundError, KeyError, RuntimeError):
-        return default
+        pass
+    return os.getenv(name, default).strip()
+
+
+def _smtp_settings():
+    username = _smtp_setting("SMTP_USERNAME")
+    password = _smtp_setting("SMTP_PASSWORD")
+    return {
+        "host": _smtp_setting("SMTP_HOST"),
+        "port": _smtp_setting("SMTP_PORT", "587"),
+        "username": username,
+        "password": "".join(password.split()),
+        "sender": _smtp_setting("SMTP_FROM_EMAIL") or username,
+    }
 
 
 def get_smtp_configuration_status():
     """Return only boolean SMTP configuration status, never secret values."""
-    settings = {
-        "SMTP_HOST": _smtp_setting("SMTP_HOST"),
-        "SMTP_PORT": _smtp_setting("SMTP_PORT", "587"),
-        "SMTP_USERNAME": _smtp_setting("SMTP_USERNAME"),
-        "SMTP_PASSWORD": _smtp_setting("SMTP_PASSWORD"),
-        "SMTP_FROM_EMAIL": _smtp_setting("SMTP_FROM_EMAIL"),
+    settings = _smtp_settings()
+    return {
+        "SMTP_HOST": bool(settings["host"]),
+        "SMTP_PORT": bool(settings["port"]),
+        "SMTP_USERNAME": bool(settings["username"]),
+        "SMTP_PASSWORD": bool(settings["password"]),
+        "SMTP_FROM_EMAIL": bool(settings["sender"]),
     }
-    return {name: bool(value) for name, value in settings.items()}
 
 
 def deliver_otp(account, otp):
     """Send an OTP through configured SMTP without exposing or persisting it."""
     st.session_state.pop("smtp_delivery_error", None)
-    settings = {
-        "host": _smtp_setting("SMTP_HOST"),
-        "username": _smtp_setting("SMTP_USERNAME"),
-        "password": _smtp_setting("SMTP_PASSWORD"),
-        "sender": _smtp_setting("SMTP_FROM_EMAIL"),
+    settings = _smtp_settings()
+    diagnostic = {
+        "host": settings["host"] or "<missing>",
+        "port": settings["port"] or "<missing>",
+        "username_set": bool(settings["username"]),
+        "password_set": bool(settings["password"]),
+        "sender_set": bool(settings["sender"]),
     }
     try:
-        port = int(_smtp_setting("SMTP_PORT", "587"))
+        port = int(settings["port"])
     except ValueError:
         st.session_state["smtp_delivery_error"] = "SMTP_PORT must be an integer."
-        print("SMTP configuration error: SMTP_PORT must be an integer.")
+        print(f"SMTP configuration error: {diagnostic}; port is not an integer.")
         return False
     if not 1 <= port <= 65535:
         st.session_state["smtp_delivery_error"] = "SMTP_PORT is outside the valid range."
-        print("SMTP configuration error: SMTP_PORT is outside the valid range.")
+        print(f"SMTP configuration error: {diagnostic}; port is outside the valid range.")
         return False
-    missing_settings = [name for name, value in settings.items() if not value]
+    missing_settings = [name for name, present in {
+        "SMTP_HOST": bool(settings["host"]),
+        "SMTP_USERNAME": bool(settings["username"]),
+        "SMTP_PASSWORD": bool(settings["password"]),
+        "SMTP_FROM_EMAIL": bool(settings["sender"]),
+    }.items() if not present]
     if missing_settings:
         st.session_state["smtp_delivery_error"] = f"Missing SMTP setting(s): {', '.join(missing_settings)}."
-        print(f"SMTP configuration error: missing {', '.join(missing_settings)}.")
+        print(f"SMTP configuration error: {diagnostic}; missing {', '.join(missing_settings)}.")
         return False
 
     message = EmailMessage()
@@ -5535,17 +5554,17 @@ def deliver_otp(account, otp):
                 print("SMTP delivery failed: recipient was refused.")
                 return False
         return True
-    except smtplib.SMTPAuthenticationError:
+    except smtplib.SMTPAuthenticationError as error:
         st.session_state["smtp_delivery_error"] = "SMTP authentication failed. Check the Gmail App Password and username."
-        print("SMTP delivery failed: authentication was rejected.")
+        print(f"SMTP delivery failed: {diagnostic}; type={type(error).__name__}; code={getattr(error, 'smtp_code', None)}.")
         return False
-    except smtplib.SMTPRecipientsRefused:
+    except smtplib.SMTPRecipientsRefused as error:
         st.session_state["smtp_delivery_error"] = "The SMTP server refused the recipient."
-        print("SMTP delivery failed: recipient was refused.")
+        print(f"SMTP delivery failed: {diagnostic}; type={type(error).__name__}; code={getattr(error, 'smtp_code', None)}.")
         return False
-    except (OSError, smtplib.SMTPException):
+    except (OSError, smtplib.SMTPException) as error:
         st.session_state["smtp_delivery_error"] = "SMTP connection or TLS negotiation failed."
-        print("SMTP delivery failed while connecting or authenticating.")
+        print(f"SMTP delivery failed: {diagnostic}; type={type(error).__name__}; code={getattr(error, 'smtp_code', None)}.")
         return False
 
 
