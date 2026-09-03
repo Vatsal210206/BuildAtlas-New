@@ -13,7 +13,7 @@ import base64
 import io
 import json
 from PIL import Image, ImageEnhance
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import time
 import plotly.express as px
 import plotly.graph_objects as go
@@ -37,6 +37,7 @@ from floorplan_engine import LayoutSolver, calculate_vastu_score, calculate_cost
 import traceback
 from concept_generator.ui_flow import concept_layout_generator_page
 from dotenv import load_dotenv
+import db
 load_dotenv(dotenv_path=Path(__file__).resolve().with_name(".env"), override=False)
 
 try:
@@ -2968,7 +2969,16 @@ def material_marketplace():
                             with quote_col_submit[0]:
                                 if st.button(f"✅ Request Quote", key=f"submit_quote_{material_key}", use_container_width=True):
                                     if contact_name and phone:
-                                        st.success(f"📧 Quote request sent to {material['supplier']}!", icon="✓")
+                                        if db.is_configured():
+                                            account = _current_account()
+                                            vendor_product = db.find_product(material["name"], material["supplier"])
+                                            if not vendor_product:
+                                                st.warning("This catalogue item is not linked to an onboarded vendor yet.")
+                                            else:
+                                                db.create_enquiry({"buyer_id": account["id"], "vendor_id": vendor_product["vendor_id"], "product_id": vendor_product["id"], "quantity": int(quantity), "location": "", "message": f"Contact: {contact_name.strip()} | Phone: {phone.strip()}", "status": "New"})
+                                                st.success(f"Quote enquiry sent to {material['supplier']}.", icon="✓")
+                                        else:
+                                            st.success(f"📧 Quote request sent to {material['supplier']}!", icon="✓")
                                         st.info(f"Contact: {contact_name} | Phone: {phone}", icon="📞")
                                     else:
                                         st.error("❌ Please enter Contact Name and Phone Number", icon="⚠️")
@@ -3864,6 +3874,10 @@ def _quote_requests_path():
 
 
 def _load_quote_requests():
+    if db.is_configured():
+        return db.list_project_quote_requests()
+    if not _local_file_fallback_enabled():
+        raise db.DatabaseConfigurationError("Supabase is required for quote-request persistence.")
     path = _quote_requests_path()
     if not path.exists():
         path.write_text("[]\n", encoding="utf-8")
@@ -3879,6 +3893,12 @@ def _load_quote_requests():
 
 
 def _save_quote_requests(requests):
+    if db.is_configured():
+        for request in requests:
+            db.update_project_quote_request(request["request_id"], request)
+        return
+    if not _local_file_fallback_enabled():
+        raise db.DatabaseConfigurationError("Supabase is required for quote-request persistence.")
     with _quote_requests_path().open("w", encoding="utf-8") as file:
         json.dump(requests, file, indent=2)
         file.write("\n")
@@ -3901,6 +3921,8 @@ def _create_quote_request(data):
         "created_at": timestamp,
         "updated_at": timestamp,
     }
+    if db.is_configured():
+        return db.create_project_quote_request(request)
     requests.append(request)
     _save_quote_requests(requests)
     return request
@@ -3908,7 +3930,7 @@ def _create_quote_request(data):
 
 def _current_account():
     email = st.session_state.get("authenticated_account", "")
-    return next((account for account in _accounts() if account.get("email") == email), {})
+    return _find_account(email) or {}
 
 
 def _current_customer_id():
@@ -4447,6 +4469,8 @@ def customer_profile():
         st.session_state["customer_name"] = name or "Customer"
         st.session_state["customer_email"] = email
         st.session_state["customer_phone"] = phone
+        if db.is_configured():
+            db.update_profile(ROLE_CUSTOMER, _current_account()["id"], {"full_name": st.session_state["customer_name"], "phone": phone})
         st.success("Profile saved for this session.")
 
 
@@ -4716,193 +4740,330 @@ def builder_profile():
         st.session_state["builder_name"] = name or "Build Partner"
         st.session_state["builder_company"] = company or "BuildAtlas Construction"
         st.session_state["builder_phone"] = phone
+        if db.is_configured():
+            db.update_profile(ROLE_BUILDER, _current_account()["id"], {"business_name": st.session_state["builder_company"], "contact_name": st.session_state["builder_name"], "phone": phone})
         st.success("Builder profile saved for this session.")
 
 
-def dealer_dashboard():
-    """Render the supplier overview using the existing materials catalogue."""
-    materials = get_materials_database()
-    low_stock = int((materials["stock"] < 500).sum())
-    st.markdown('<h1 class="main-header">🛒 Dealer Dashboard</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">Manage products, enquiries, orders, and deliveries</p>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="ba-card"><div class="ba-card-title">Welcome, Material Partner</div>'
-        '<div style="color:#b0c9e3;font-size:14px;line-height:1.6;">'
-        'Keep your catalogue accurate, respond to project enquiries, and stay ahead of stock and deliveries.'
-        '</div></div>',
-        unsafe_allow_html=True,
-    )
+DEALER_LOW_STOCK_THRESHOLD = 500
+DEALER_QUOTE_STATUSES = ("Draft", "Sent", "Accepted", "Rejected", "Expired")
+DEALER_ORDER_STATUSES = ("New", "Confirmed", "Processing", "Ready for Dispatch", "Dispatched", "Delivered", "Cancelled")
+DEALER_DELIVERY_STATUSES = ("Not Scheduled", "Scheduled", "Dispatched", "Delivered")
 
-    metrics = [
-        ("📦 Total Products", f"{len(materials)}", "In catalogue"),
-        ("📊 Inventory Status", "Healthy", f"{low_stock} low-stock items"),
-        ("💬 New Enquiries", "14", "5 new this week"),
-        ("📋 Pending Quotations", "7", "3 need attention"),
-        ("🚚 Open Orders", "9", "2 dispatch today"),
-        ("💰 Estimated Sales", "₹18.6 Lakhs", "This month"),
-        ("⚠️ Low-Stock Alerts", f"{low_stock}", "Restock recommended"),
-        ("⭐ Store Rating", "4.7 / 5", "From 86 reviews"),
-    ]
+
+def _dealer_state():
+    """Return session-only vendor data for the onboarding/demo workflow."""
+    if db.is_configured():
+        account = _current_account()
+        vendor_id = account.get("id")
+        products = []
+        for product in db.vendor_products(vendor_id):
+            products.append({"id": product["id"], "name": product["product_name"], "category": product["category"], "brand": product["brand"], "supplier": account.get("profile", {}).get("business_name", "Vendor"), "price": float(product["price"]), "unit": product["unit"], "stock": int(product["stock_quantity"]), "low_stock_threshold": int(product.get("low_stock_threshold", DEALER_LOW_STOCK_THRESHOLD)), "delivery_days": int(product["delivery_time"]), "rating": 0.0})
+        enquiries = []
+        for enquiry in db.vendor_enquiries(vendor_id):
+            product = next((item for item in products if item["id"] == enquiry.get("product_id")), {})
+            enquiries.append({"id": enquiry["id"], "buyer_id": enquiry["buyer_id"], "buyer": enquiry["buyer_id"], "item": product.get("name", "Product request"), "product_id": enquiry.get("product_id"), "quantity": enquiry["quantity"], "unit": product.get("unit", "units"), "location": enquiry.get("location", ""), "message": enquiry.get("message", ""), "date": str(enquiry.get("created_at", ""))[:10], "status": enquiry.get("status", "New")})
+        quotes = []
+        for quote in db.vendor_quotations(vendor_id):
+            enquiry = next((item for item in enquiries if item["id"] == quote.get("enquiry_id")), {})
+            quotes.append({"id": quote["id"], "enquiry_id": quote["enquiry_id"], "buyer_id": quote["buyer_id"], "buyer": enquiry.get("buyer", quote["buyer_id"]), "item": enquiry.get("item", "Product"), "product_id": quote["product_id"], "quantity": quote["quantity"], "unit_price": float(quote["unit_price"]), "delivery_charge": float(quote["delivery_charge"]), "total": float(quote["total_amount"]), "delivery_days": int(quote["estimated_delivery"]), "status": quote.get("status", "Draft"), "date": str(quote.get("created_at", ""))[:10]})
+        orders = []
+        deliveries = db.vendor_deliveries(vendor_id)
+        for order in db.vendor_orders(vendor_id):
+            quote = next((item for item in quotes if item["id"] == order.get("quotation_id")), {})
+            delivery = next((item for item in deliveries if item.get("order_id") == order["id"]), {})
+            orders.append({"id": order["id"], "quote_id": order["quotation_id"], "buyer": quote.get("buyer", order["buyer_id"]), "item": quote.get("item", "Product"), "quantity": quote.get("quantity", 0), "total": float(order["total_amount"]), "order_date": str(order.get("created_at", ""))[:10], "location": order.get("delivery_location", ""), "status": order.get("status", "New"), "delivery_status": delivery.get("status", "Not Scheduled"), "dispatch_date": str(delivery.get("dispatch_date", "")), "expected_date": str(delivery.get("expected_delivery_date", ""))})
+        state = {"dealer_products": products, "dealer_enquiries": enquiries, "dealer_quotes": quotes, "dealer_orders": orders, "dealer_activity": []}
+        st.session_state["dealer_db_state"] = state
+        return state
+    if "dealer_products" not in st.session_state:
+        products = get_materials_database().to_dict("records")
+        for product in products:
+            product["id"] = f"PR-{uuid.uuid4().hex[:8].upper()}"
+        st.session_state["dealer_products"] = products
+    st.session_state.setdefault("dealer_enquiries", [
+        {"id": "ENQ-1001", "buyer": "Apex Constructions", "item": "TMT Steel Bar 12mm", "quantity": 1200, "unit": "kg", "location": "Noida", "date": "Today", "status": "New"},
+        {"id": "ENQ-1002", "buyer": "Rohan Mehta", "item": "Ordinary Portland Cement (OPC)", "quantity": 180, "unit": "bags", "location": "Ghaziabad", "date": "Yesterday", "status": "Awaiting Details"},
+        {"id": "ENQ-1003", "buyer": "Sharma Constructions", "item": "River Sand", "quantity": 500, "unit": "cubic ft", "location": "Delhi", "date": "2 days ago", "status": "Responded"},
+    ])
+    st.session_state.setdefault("dealer_quotes", [])
+    st.session_state.setdefault("dealer_orders", [])
+    st.session_state.setdefault("dealer_activity", ["Vendor workspace initialized for this session."])
+    return st.session_state
+
+
+def _dealer_add_activity(message):
+    _dealer_state()["dealer_activity"].insert(0, message)
+
+
+def _dealer_go(page):
+    st.session_state["active_page"] = page
+    st.rerun()
+
+
+def dealer_dashboard():
+    state = _dealer_state()
+    products = state["dealer_products"]
+    quotes = state["dealer_quotes"]
+    orders = state["dealer_orders"]
+    low_stock = sum(product["stock"] == 0 or product["stock"] < DEALER_LOW_STOCK_THRESHOLD for product in products)
+    sales = sum(order["total"] for order in orders if order["status"] != "Cancelled")
+    metrics = [("📦 Total Products", len(products), "In your catalogue"), ("⚠️ Low Stock Items", low_stock, "Needs attention"), ("💬 New Enquiries", sum(e["status"] == "New" for e in state["dealer_enquiries"]), "Incoming requests"), ("📋 Pending Quotations", sum(q["status"] in ("Draft", "Sent") for q in quotes), "Draft or awaiting reply"), ("🧾 Active Orders", sum(o["status"] not in ("Delivered", "Cancelled") for o in orders), "Accepted customer orders"), ("🚚 Pending Deliveries", sum(o["status"] in ("Ready for Dispatch", "Dispatched") for o in orders), "Fulfilment queue"), ("💰 Sales / Order Value", f"₹{sales:,.0f}", "Accepted order value"), ("⭐ Store Rating", "4.7 / 5", "86 customer reviews")]
+    st.markdown('<h1 class="main-header">📦 Vendor Dashboard</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Your catalogue, incoming demand, quotations, orders, and deliveries</p>', unsafe_allow_html=True)
+    st.markdown('<div class="ba-card"><div class="ba-card-title">Welcome, Material Partner</div><div style="color:#b0c9e3;font-size:14px;line-height:1.6;">Start with incoming enquiries, then turn accepted quotations into orders for fulfilment.</div></div>', unsafe_allow_html=True)
     metric_cols = st.columns(4)
     for index, (label, value, detail) in enumerate(metrics):
         with metric_cols[index % 4]:
-            st.markdown(
-                f'<div class="metric-card"><div class="metric-label">{label}</div>'
-                f'<div class="metric-value">{value}</div>'
-                f'<div style="color:#b0c9e3;font-size:11px;margin-top:6px;">{detail}</div></div>',
-                unsafe_allow_html=True,
-            )
-
+            st.markdown(f'<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div><div style="color:#b0c9e3;font-size:11px;margin-top:6px;">{detail}</div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="ba-divider"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="ba-card-title">⚡ ACTION REQUIRED</div>', unsafe_allow_html=True)
+    actions = [("💬 Review New Enquiries", "💬  Enquiries"), ("📋 Manage Quotations", "📋  Quotations"), ("🧾 Process Orders", "🧾  Orders"), ("🚚 Manage Deliveries", "🚚  Delivery"), ("📊 Update Inventory", "📊  Inventory"), ("📦 Manage Product Catalogue", "📦  Product Catalogue")]
+    action_cols = st.columns(3)
+    for index, (label, page) in enumerate(actions):
+        with action_cols[index % 3]:
+            if st.button(label, key=f"dealer_home_action_{index}", use_container_width=True):
+                _dealer_go(page)
     st.markdown('<div class="ba-divider"></div>', unsafe_allow_html=True)
     left_col, right_col = st.columns([1.35, 1])
     with left_col:
-        st.markdown('<div class="ba-card-title">⚡ Dealer Quick Actions</div>', unsafe_allow_html=True)
-        actions = [
-            ("📦 View Product Catalogue", "📦  Product Catalogue"),
-            ("⚠️ Check Low Stock", "📊  Inventory"),
-            ("💬 Review Enquiries", "💬  Enquiries"),
-            ("🚚 Manage Deliveries", "🚚  Delivery"),
-        ]
-        action_cols = st.columns(2)
-        for index, (label, target_page) in enumerate(actions):
-            with action_cols[index % 2]:
-                if st.button(label, key=f"dealer_action_{index}", use_container_width=True):
-                    st.session_state["active_page"] = target_page
-                    st.rerun()
-
-    with right_col:
         st.markdown('<div class="ba-card-title">🕘 Recent Activity</div>', unsafe_allow_html=True)
-        st.markdown(
-            '<div style="color:#dde8f5;font-size:13px;line-height:2;">'
-            '• New builder enquiry · 10 min ago<br>'
-            '• TMT Steel 12mm stock updated<br>'
-            '• Order OD-2048 ready for dispatch<br>'
-            '• Customer review received · 4 stars'
-            '</div>',
-            unsafe_allow_html=True,
-        )
+        st.markdown('<div style="color:#dde8f5;font-size:13px;line-height:2;">' + "<br>".join(f"• {item}" for item in state["dealer_activity"][:6]) + '</div>', unsafe_allow_html=True)
+    with right_col:
+        st.markdown('<div class="ba-card-title">🔄 WORKFLOW</div>', unsafe_allow_html=True)
+        st.markdown('<div style="color:#dde8f5;font-size:13px;line-height:2;">Customer / Builder → Enquiry → Vendor Quote → Accepted Quote → Order → Dispatch → Delivery</div>', unsafe_allow_html=True)
 
 
 def dealer_catalogue():
-    """Show the dealer catalogue using the shared construction materials data."""
+    state = _dealer_state()
     st.markdown('<h1 class="main-header">📦 Product Catalogue</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">Manage the products visible to construction partners</p>', unsafe_allow_html=True)
-    materials = get_materials_database()
-    category = st.selectbox("Category", ["All"] + sorted(materials["category"].unique().tolist()), key="dealer_catalogue_category")
-    search = st.text_input("Search catalogue", placeholder="Product, brand, or supplier", key="dealer_catalogue_search")
-    filtered = materials if category == "All" else materials[materials["category"] == category]
+    st.markdown('<p class="sub-header">Add, edit, remove, and search products you supply</p>', unsafe_allow_html=True)
+    with st.expander("➕ Add New Product"):
+        with st.form("dealer_add_product_form"):
+            name = st.text_input("Product name")
+            category = st.text_input("Category")
+            brand = st.text_input("Brand")
+            price = st.number_input("Price (₹)", min_value=0.0, step=1.0)
+            unit = st.text_input("Unit", value="per piece")
+            stock = st.number_input("Available stock", min_value=0, step=1)
+            lead_time = st.number_input("Delivery / lead time (days)", min_value=0, step=1, value=2)
+            if st.form_submit_button("Add Product", type="primary"):
+                if not name.strip() or not category.strip():
+                    st.error("Product name and category are required.")
+                else:
+                    product_data = {"vendor_id": _current_account()["id"], "product_name": name.strip(), "category": category.strip(), "brand": brand.strip() or "Own brand", "price": float(price), "unit": unit.strip() or "per piece", "stock_quantity": int(stock), "low_stock_threshold": DEALER_LOW_STOCK_THRESHOLD, "delivery_time": int(lead_time)}
+                    if db.is_configured():
+                        db.create_product(product_data)
+                    else:
+                        state["dealer_products"].append({"id": f"PR-{uuid.uuid4().hex[:8].upper()}", "name": name.strip(), "category": category.strip(), "brand": brand.strip() or "Own brand", "supplier": state.get("dealer_business_name", "Vendor catalogue"), "price": float(price), "unit": unit.strip() or "per piece", "stock": int(stock), "delivery_days": int(lead_time), "rating": 0.0})
+                    _dealer_add_activity(f"Product added: {name.strip()}")
+                    st.success("Product added to your session catalogue.")
+    products = pd.DataFrame(state["dealer_products"])
+    category_filter = st.selectbox("Category", ["All"] + sorted(products["category"].unique().tolist()), key="dealer_catalogue_category")
+    search = st.text_input("Search products", placeholder="Product or brand", key="dealer_catalogue_search")
+    filtered = products if category_filter == "All" else products[products["category"] == category_filter]
     if search:
-        search_value = search.lower()
-        filtered = filtered[
-            filtered["name"].str.lower().str.contains(search_value)
-            | filtered["brand"].str.lower().str.contains(search_value)
-            | filtered["supplier"].str.lower().str.contains(search_value)
-        ]
-    st.dataframe(
-        filtered[["category", "name", "brand", "price", "unit", "stock", "delivery_days", "rating"]]
-        .rename(columns={"category": "Category", "name": "Product", "brand": "Brand", "price": "Price (₹)", "unit": "Unit", "stock": "Stock", "delivery_days": "Delivery (days)", "rating": "Rating"}),
-        use_container_width=True,
-        hide_index=True,
-    )
+        term = search.lower()
+        filtered = filtered[filtered["name"].str.lower().str.contains(term) | filtered["brand"].str.lower().str.contains(term)]
+    st.dataframe(filtered[["id", "category", "name", "brand", "price", "unit", "stock", "delivery_days"]].rename(columns={"id": "Product ID", "category": "Category", "name": "Product", "brand": "Brand", "price": "Price (₹)", "unit": "Unit", "stock": "Stock", "delivery_days": "Lead time (days)"}), use_container_width=True, hide_index=True)
+    for product in list(state["dealer_products"]):
+        with st.expander(f"Edit {product['name']} ({product['id']})"):
+            with st.form(f"dealer_edit_product_{product['id']}"):
+                new_price = st.number_input("Price (₹)", min_value=0.0, value=float(product["price"]), key=f"dealer_price_{product['id']}")
+                new_stock = st.number_input("Available stock", min_value=0, value=int(product["stock"]), key=f"dealer_stock_{product['id']}")
+                new_lead = st.number_input("Lead time (days)", min_value=0, value=int(product["delivery_days"]), key=f"dealer_lead_{product['id']}")
+                save, remove = st.columns(2)
+                with save:
+                    save_product = st.form_submit_button("Save Changes", type="primary")
+                with remove:
+                    remove_product = st.form_submit_button("Remove Product")
+            if save_product:
+                if db.is_configured():
+                    db.update_product(product["id"], {"price": float(new_price), "stock_quantity": int(new_stock), "delivery_time": int(new_lead)})
+                else:
+                    product.update(price=float(new_price), stock=int(new_stock), delivery_days=int(new_lead))
+                _dealer_add_activity(f"Product updated: {product['name']}")
+                st.rerun()
+            if remove_product:
+                if db.is_configured():
+                    db.delete_product(product["id"])
+                else:
+                    state["dealer_products"].remove(product)
+                _dealer_add_activity(f"Product removed: {product['name']}")
+                st.rerun()
 
 
 def dealer_inventory():
-    """Show inventory levels and low-stock alerts for catalogue products."""
+    state = _dealer_state()
     st.markdown('<h1 class="main-header">📊 Inventory</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">Monitor available stock across your product catalogue</p>', unsafe_allow_html=True)
-    materials = get_materials_database().copy()
-    materials["Status"] = materials["stock"].apply(lambda stock: "⚠️ Low stock" if stock < 500 else "✅ In stock")
-    low_stock = materials[materials["stock"] < 500]
-    if not low_stock.empty:
-        st.warning(f"{len(low_stock)} products need restocking soon.")
-    st.dataframe(
-        materials[["name", "category", "stock", "unit", "delivery_days", "Status"]]
-        .rename(columns={"name": "Product", "category": "Category", "stock": "Available Stock", "unit": "Unit", "delivery_days": "Lead Time (days)"}),
-        use_container_width=True,
-        hide_index=True,
-    )
+    st.markdown('<p class="sub-header">Manage available stock and identify low-stock products</p>', unsafe_allow_html=True)
+    products = state["dealer_products"]
+    if not products:
+        st.info("Your catalogue is empty. Add a product from Product Catalogue to start managing inventory.")
+        return
+    low_stock = [product for product in products if product["stock"] < DEALER_LOW_STOCK_THRESHOLD]
+    if low_stock:
+        st.warning(f"{len(low_stock)} product(s) are low stock or out of stock.")
+    st.dataframe(pd.DataFrame([{**p, "Status": "❌ Out of stock" if p["stock"] == 0 else "⚠️ Low stock" if p["stock"] < DEALER_LOW_STOCK_THRESHOLD else "✅ Available"} for p in products])[["name", "category", "stock", "unit", "Status"]].rename(columns={"name": "Product", "category": "Category", "stock": "Available Stock", "unit": "Unit"}), use_container_width=True, hide_index=True)
+    with st.form("dealer_inventory_update_form"):
+        product_id = st.selectbox("Product", [p["id"] for p in products], format_func=lambda value: next(p["name"] for p in products if p["id"] == value))
+        quantity = st.number_input("New stock quantity", min_value=0, step=1)
+        if st.form_submit_button("Update Stock", type="primary"):
+            product = next(p for p in products if p["id"] == product_id)
+            if db.is_configured():
+                db.update_product(product_id, {"stock_quantity": int(quantity)})
+            else:
+                product["stock"] = int(quantity)
+            _dealer_add_activity(f"Stock updated: {product['name']} ({int(quantity)})")
+            st.success("Inventory updated for this session.")
 
 
 def dealer_enquiries():
-    """Render mock customer and builder enquiries."""
-    st.markdown('<h1 class="main-header">💬 Customer / Builder Enquiries</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">Respond to product and bulk-order questions</p>', unsafe_allow_html=True)
-    enquiries = pd.DataFrame([
-        {"From": "Apex Constructions", "Subject": "TMT Steel 12mm bulk rate", "Received": "Today", "Status": "New"},
-        {"From": "Rohan Mehta", "Subject": "Cement for 3BHK project", "Received": "Yesterday", "Status": "Replied"},
-        {"From": "Sharma Constructions", "Subject": "Next-day sand delivery", "Received": "2 days ago", "Status": "Awaiting details"},
-    ])
-    st.dataframe(enquiries, use_container_width=True, hide_index=True)
-    if st.button("Open Enquiry Inbox", type="primary", use_container_width=True):
-        st.info("Messaging will be connected to customer and builder records in a future backend update.")
+    state = _dealer_state()
+    st.markdown('<h1 class="main-header">💬 Enquiries</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Incoming customer and builder requests for your products</p>', unsafe_allow_html=True)
+    st.dataframe(pd.DataFrame(state["dealer_enquiries"]).rename(columns={"id": "Enquiry ID", "buyer": "Customer / Builder", "item": "Requested Product", "quantity": "Quantity", "unit": "Unit", "location": "Project / Location", "date": "Date", "status": "Status"}), use_container_width=True, hide_index=True)
+    for enquiry in state["dealer_enquiries"]:
+        with st.expander(f"{enquiry['id']} · {enquiry['buyer']} · {enquiry['item']}"):
+            st.write(f"Quantity: {enquiry['quantity']} {enquiry['unit']} · Location: {enquiry['location']} · Received: {enquiry['date']}")
+            new_status = st.selectbox("Enquiry status", ["New", "Responded", "Awaiting Details", "Closed"], index=["New", "Responded", "Awaiting Details", "Closed"].index(enquiry["status"]), key=f"dealer_enquiry_status_{enquiry['id']}")
+            if st.button("Save Enquiry Status", key=f"dealer_enquiry_save_{enquiry['id']}"):
+                if db.is_configured():
+                    db.update_enquiry(enquiry["id"], {"status": new_status})
+                else:
+                    enquiry["status"] = new_status
+                st.rerun()
 
 
 def dealer_quotations():
-    """Render mock supplier quotations."""
+    state = _dealer_state()
     st.markdown('<h1 class="main-header">📋 Quotations</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">Prepare and track material quotations</p>', unsafe_allow_html=True)
-    quotations = pd.DataFrame([
-        {"Reference": "DQ-4021", "Requested By": "Apex Constructions", "Items": "TMT Steel, Cement", "Value": "₹2.8 Lakhs", "Status": "Pending"},
-        {"Reference": "DQ-4018", "Requested By": "Sharma Constructions", "Items": "Sand, Bricks", "Value": "₹86,000", "Status": "Sent"},
-        {"Reference": "DQ-4009", "Requested By": "Rohan Mehta", "Items": "Cement", "Value": "₹74,000", "Status": "Accepted"},
-    ])
-    st.dataframe(quotations, use_container_width=True, hide_index=True)
-    if st.button("Create Quotation", type="primary", use_container_width=True):
-        st.info("Quotation creation will be connected to enquiry details in a future backend update.")
+    st.markdown('<p class="sub-header">Create quotations from incoming enquiries and track buyer decisions</p>', unsafe_allow_html=True)
+    available = [e for e in state["dealer_enquiries"] if e["status"] != "Closed"]
+    if available:
+        with st.form("dealer_create_quote_form"):
+            enquiry_id = st.selectbox("Use enquiry", [e["id"] for e in available], format_func=lambda value: next(f"{e['id']} · {e['buyer']} · {e['item']}" for e in available if e["id"] == value))
+            unit_price = st.number_input("Price per unit (₹)", min_value=0.0, step=1.0)
+            delivery_charge = st.number_input("Delivery charges (₹)", min_value=0.0, step=1.0)
+            estimate = st.number_input("Delivery estimate (days)", min_value=0, value=2, step=1)
+            if st.form_submit_button("Create Draft Quotation", type="primary"):
+                enquiry = next(e for e in available if e["id"] == enquiry_id)
+                total = float(unit_price) * enquiry["quantity"] + float(delivery_charge)
+                if db.is_configured():
+                    db.create_quotation({"enquiry_id": enquiry_id, "vendor_id": _current_account()["id"], "buyer_id": enquiry["buyer_id"], "product_id": enquiry["product_id"], "quantity": enquiry["quantity"], "unit_price": float(unit_price), "delivery_charge": float(delivery_charge), "total_amount": total, "estimated_delivery": int(estimate), "status": "Draft"})
+                    db.update_enquiry(enquiry_id, {"status": "Responded"})
+                else:
+                    quote = {"id": f"DQ-{uuid.uuid4().hex[:8].upper()}", "enquiry_id": enquiry_id, "buyer": enquiry["buyer"], "item": enquiry["item"], "quantity": enquiry["quantity"], "unit_price": float(unit_price), "delivery_charge": float(delivery_charge), "total": total, "delivery_days": int(estimate), "status": "Draft", "date": datetime.now().date().isoformat()}
+                    state["dealer_quotes"].append(quote)
+                    enquiry["status"] = "Responded"
+                _dealer_add_activity(f"Quotation created: {quote['id']}")
+                st.success("Draft quotation created from the enquiry.")
+    if state["dealer_quotes"]:
+        st.dataframe(pd.DataFrame(state["dealer_quotes"])[["id", "buyer", "item", "quantity", "total", "delivery_days", "status"]].rename(columns={"id": "Quote ID", "buyer": "Customer / Builder", "item": "Requested Item", "quantity": "Quantity", "total": "Total (₹)", "delivery_days": "Delivery (days)", "status": "Status"}), use_container_width=True, hide_index=True)
+    for quote in state["dealer_quotes"]:
+        status = st.selectbox(f"{quote['id']} status", DEALER_QUOTE_STATUSES, index=DEALER_QUOTE_STATUSES.index(quote["status"]), key=f"dealer_quote_status_{quote['id']}")
+        if st.button("Update Quotation", key=f"dealer_quote_update_{quote['id']}"):
+            quote["status"] = status
+            if db.is_configured():
+                db.update_quotation(quote["id"], {"status": status})
+            if status == "Accepted" and not any(order["quote_id"] == quote["id"] for order in state["dealer_orders"]):
+                order = {"id": f"OD-{uuid.uuid4().hex[:8].upper()}", "quote_id": quote["id"], "buyer": quote["buyer"], "item": quote["item"], "quantity": quote["quantity"], "total": quote["total"], "order_date": datetime.now().date().isoformat(), "location": next(e["location"] for e in state["dealer_enquiries"] if e["id"] == quote["enquiry_id"]), "status": "New", "delivery_status": "Not Scheduled", "dispatch_date": "", "expected_date": ""}
+                if db.is_configured():
+                    db.create_order({"quotation_id": quote["id"], "buyer_id": quote["buyer_id"], "vendor_id": _current_account()["id"], "total_amount": quote["total"], "delivery_location": order["location"], "status": "New"})
+                else:
+                    state["dealer_orders"].append(order)
+                _dealer_add_activity(f"Accepted quotation generated order: {order['id']}")
+            st.rerun()
 
 
 def dealer_orders():
-    """Render mock orders and fulfilment requests."""
-    st.markdown('<h1 class="main-header">🧾 Orders / Requests</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">Track incoming orders and fulfilment status</p>', unsafe_allow_html=True)
-    orders = pd.DataFrame([
-        {"Order": "OD-2048", "Buyer": "Apex Constructions", "Items": "Steel + Cement", "Value": "₹1.24 Lakhs", "Status": "Ready to dispatch"},
-        {"Order": "OD-2045", "Buyer": "Mehta Villa", "Items": "Floor Tiles", "Value": "₹1.02 Lakhs", "Status": "Processing"},
-        {"Order": "OD-2039", "Buyer": "Kapoor Renovation", "Items": "Paint + Plumbing", "Value": "₹68,500", "Status": "Delivered"},
-    ])
-    st.dataframe(orders, use_container_width=True, hide_index=True)
+    state = _dealer_state()
+    st.markdown('<h1 class="main-header">🧾 Orders</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Orders created after customers accept your quotations</p>', unsafe_allow_html=True)
+    if not state["dealer_orders"]:
+        st.info("Accepted quotations will appear here as orders. Vendors do not create manual customer orders.")
+        return
+    st.dataframe(pd.DataFrame(state["dealer_orders"])[["id", "buyer", "item", "quantity", "total", "order_date", "location", "status"]].rename(columns={"id": "Order ID", "buyer": "Customer / Builder", "item": "Items", "quantity": "Quantity", "total": "Order value (₹)", "order_date": "Order date", "location": "Delivery location", "status": "Status"}), use_container_width=True, hide_index=True)
+    for order in state["dealer_orders"]:
+        status = st.selectbox(f"{order['id']} fulfilment status", DEALER_ORDER_STATUSES, index=DEALER_ORDER_STATUSES.index(order["status"]), key=f"dealer_order_status_{order['id']}")
+        if st.button("Update Order Status", key=f"dealer_order_update_{order['id']}"):
+            if db.is_configured():
+                db.update_order(order["id"], {"status": status})
+            else:
+                order["status"] = status
+            _dealer_add_activity(f"Order {order['id']} marked {status}.")
+            st.rerun()
 
 
 def dealer_delivery_management():
-    """Render mock delivery planning without real order processing."""
+    state = _dealer_state()
     st.markdown('<h1 class="main-header">🚚 Delivery Management</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">Coordinate dispatches and expected delivery dates</p>', unsafe_allow_html=True)
-    deliveries = pd.DataFrame([
-        {"Order": "OD-2048", "Destination": "Noida", "Dispatch": "Today", "Expected": "Tomorrow", "Status": "Packed"},
-        {"Order": "OD-2045", "Destination": "Delhi", "Dispatch": "Tomorrow", "Expected": "In 3 days", "Status": "Scheduling"},
-        {"Order": "OD-2039", "Destination": "Ghaziabad", "Dispatch": "Completed", "Expected": "Delivered", "Status": "Delivered"},
-    ])
-    st.dataframe(deliveries, use_container_width=True, hide_index=True)
-    st.info("Courier and live tracking integrations will be added after the backend workflow is defined.")
+    st.markdown('<p class="sub-header">Schedule dispatch and complete delivery for accepted orders</p>', unsafe_allow_html=True)
+    deliveries = [order for order in state["dealer_orders"] if order["status"] not in ("Cancelled",)]
+    if not deliveries:
+        st.info("Accepted quotations generate delivery records automatically.")
+        return
+    for order in deliveries:
+        st.markdown(f'<div class="ba-card"><div class="ba-card-title">{order["id"]} · {order["location"]}</div><div style="color:#b0c9e3;font-size:13px;">Destination: {order["location"]} · Item: {order["item"]} · Dispatch: {order["dispatch_date"] or "Not scheduled"} · Expected: {order["expected_date"] or "Not scheduled"}</div></div>', unsafe_allow_html=True)
+        with st.form(f"dealer_delivery_form_{order['id']}"):
+            delivery_status = st.selectbox("Delivery status", DEALER_DELIVERY_STATUSES, index=DEALER_DELIVERY_STATUSES.index(order["delivery_status"]), key=f"dealer_delivery_status_{order['id']}")
+            dispatch_date = st.date_input("Dispatch date", value=datetime.now().date(), key=f"dealer_dispatch_date_{order['id']}")
+            expected_date = st.date_input("Expected delivery date", value=datetime.now().date() + timedelta(days=2), key=f"dealer_expected_date_{order['id']}")
+            if st.form_submit_button("Save Delivery Update", type="primary"):
+                delivery_fields = {"status": delivery_status, "dispatch_date": dispatch_date.isoformat(), "expected_delivery_date": expected_date.isoformat()}
+                if db.is_configured():
+                    existing_deliveries = db.vendor_deliveries(_current_account()["id"])
+                    existing = next((item for item in existing_deliveries if item.get("order_id") == order["id"]), None)
+                    if existing:
+                        db.update_delivery(existing["id"], delivery_fields)
+                    else:
+                        db.create_delivery({"order_id": order["id"], **delivery_fields})
+                else:
+                    order.update(delivery_status=delivery_status, dispatch_date=dispatch_date.isoformat(), expected_date=expected_date.isoformat())
+                if delivery_status == "Dispatched":
+                    if db.is_configured():
+                        db.update_order(order["id"], {"status": "Dispatched"})
+                    else:
+                        order["status"] = "Dispatched"
+                elif delivery_status == "Delivered":
+                    if db.is_configured():
+                        db.update_order(order["id"], {"status": "Delivered"})
+                    else:
+                        order["status"] = "Delivered"
+                _dealer_add_activity(f"Delivery updated: {order['id']} ({delivery_status}).")
+                st.rerun()
 
 
 def dealer_sales_analytics():
-    """Render a small mock sales summary for the dealer portal."""
-    st.markdown('<h1 class="main-header">📈 Sales Analytics</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">Review catalogue performance and sales trends</p>', unsafe_allow_html=True)
-    cols = st.columns(3)
-    for column, label, value in zip(cols, ["Monthly Sales", "Average Order", "Conversion Rate"], ["₹18.6 Lakhs", "₹42,300", "31%"]):
+    state = _dealer_state()
+    st.markdown('<h1 class="main-header">📈 Vendor Analytics</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Sales, order performance, product demand, and stock health</p>', unsafe_allow_html=True)
+    orders = [o for o in state["dealer_orders"] if o["status"] != "Cancelled"]
+    sales = sum(o["total"] for o in orders)
+    cols = st.columns(5)
+    for column, label, value in zip(cols, ["Total Sales", "Orders This Month", "Average Order Value", "Pending Orders", "Low-stock Count"], [f"₹{sales:,.0f}", len(orders), f"₹{sales / len(orders):,.0f}" if orders else "₹0", sum(o["status"] not in ("Delivered", "Cancelled") for o in orders), sum(p["stock"] < DEALER_LOW_STOCK_THRESHOLD for p in state["dealer_products"])]):
         with column:
             st.metric(label, value)
-    chart_data = pd.DataFrame({"Category": ["Cement", "Steel", "Bricks", "Sand", "Tiles", "Paint"], "Sales (₹ Lakhs)": [4.8, 5.6, 2.1, 1.7, 2.8, 1.6]})
-    fig = px.bar(chart_data, x="Category", y="Sales (₹ Lakhs)", color="Sales (₹ Lakhs)", color_continuous_scale=["#1e2d42", "#00e5b0"])
-    fig = apply_dark(fig)
-    fig.update_coloraxes(showscale=False)
-    st.plotly_chart(fig, use_container_width=True)
+    category_sales = {}
+    for order in orders:
+        product = next((p for p in state["dealer_products"] if p["name"] == order["item"]), None)
+        category = product["category"] if product else "Other"
+        category_sales[category] = category_sales.get(category, 0) + order["total"]
+    if category_sales:
+        chart_data = pd.DataFrame({"Category": list(category_sales), "Sales (₹)": list(category_sales.values())})
+        fig = apply_dark(px.bar(chart_data, x="Category", y="Sales (₹)", color="Sales (₹)", color_continuous_scale=["#1e2d42", "#00e5b0"]))
+        fig.update_coloraxes(showscale=False)
+        st.plotly_chart(fig, use_container_width=True)
+    top_products = pd.DataFrame([{ "Product": item, "Orders": sum(o["item"] == item for o in orders)} for item in sorted({o["item"] for o in orders})])
+    if not top_products.empty:
+        st.dataframe(top_products.sort_values("Orders", ascending=False), use_container_width=True, hide_index=True)
 
 
 def dealer_reviews():
-    """Render mock marketplace review feedback."""
     st.markdown('<h1 class="main-header">⭐ Reviews</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">Customer and builder feedback on your products</p>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="ba-card"><div class="ba-card-title">4.7 / 5.0 overall rating</div>'
-        '<div style="color:#b0c9e3;font-size:13px;line-height:2;">'
-        '⭐ 4.8 · Product quality<br>⭐ 4.6 · Delivery reliability<br>⭐ 4.7 · Communication<br><br>'
-        'New review responses will be connected to the marketplace account in a future backend update.'
-        '</div></div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown('<p class="sub-header">Customer and builder feedback on your store</p>', unsafe_allow_html=True)
+    st.markdown('<div class="ba-card"><div class="ba-card-title">4.7 / 5.0 overall rating</div><div style="color:#b0c9e3;font-size:13px;line-height:2;">⭐ 4.8 · Product quality<br>⭐ 4.6 · Delivery reliability<br>⭐ 4.7 · Communication</div></div>', unsafe_allow_html=True)
+    st.dataframe(pd.DataFrame([{ "Reviewer": "Apex Constructions", "Rating": 5, "Review": "Consistent quality and clear delivery updates.", "Vendor response": "Thank you for the feedback." }, { "Reviewer": "Rohan Mehta", "Rating": 4, "Review": "Good material availability.", "Vendor response": "We appreciate your order." }]), use_container_width=True, hide_index=True)
 
 
 def dealer_profile():
@@ -4921,22 +5082,57 @@ def dealer_profile():
         st.session_state["dealer_business_name"] = business_name or "BuildAtlas Materials Supply"
         st.session_state["dealer_contact_name"] = contact_name or "Material Partner"
         st.session_state["dealer_phone"] = phone
+        if db.is_configured():
+            db.update_profile(ROLE_VENDOR, _current_account()["id"], {"business_name": st.session_state["dealer_business_name"], "contact_name": st.session_state["dealer_contact_name"], "phone": phone})
         st.success("Business profile saved for this session.")
+
+
+def admin_dashboard():
+    """Render non-sensitive onboarding and marketplace counts for admins."""
+    st.markdown('<h1 class="main-header">🛡️ Admin Dashboard</h1>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">BuildAtlas onboarding and marketplace overview</p>', unsafe_allow_html=True)
+    try:
+        overview = db.admin_overview()
+    except (db.DatabaseConfigurationError, db.DatabaseOperationError) as exc:
+        st.error(f"Admin data could not be loaded: {exc}")
+        return
+    counts = overview["counts"]
+    columns = st.columns(4)
+    for column, label, value in zip(columns, ["Registered Users", "Vendors", "Builders", "Customers"], [counts["users"], counts["vendors"], counts["builders"], counts["customers"]]):
+        with column:
+            st.metric(label, value)
+    st.dataframe(pd.DataFrame([{ "Metric": label, "Count": counts[key] } for label, key in [("Total products", "products"), ("Total enquiries", "enquiries"), ("Total quotations", "quotations"), ("Total orders", "orders")]]), use_container_width=True, hide_index=True)
+    for role, title in ((ROLE_VENDOR, "Vendors"), (ROLE_BUILDER, "Builders")):
+        rows = [row for row in overview["profiles"] if row.get("role") == role]
+        st.markdown(f"### {title}")
+        st.dataframe(pd.DataFrame(rows, columns=["business_name", "contact_name", "email", "phone", "created_at", "verified"]).rename(columns={"business_name": "Business name", "contact_name": "Contact name", "email": "Email", "phone": "Phone", "created_at": "Registration date", "verified": "Verified"}), use_container_width=True, hide_index=True)
 
 
 ROLE_CUSTOMER = "CUSTOMER"
 ROLE_BUILDER = "BUILDER / CONTRACTOR"
 ROLE_VENDOR = "DEALER / SUPPLIER"
+ROLE_ADMIN = "ADMIN"
 ROLE_LABELS = {
     ROLE_CUSTOMER: "Customer",
     ROLE_BUILDER: "Builder",
     ROLE_VENDOR: "Vendor",
+    ROLE_ADMIN: "Admin",
 }
 PRIMARY_ROLES = tuple(ROLE_LABELS)
 OTP_TTL_SECONDS = 300
 OTP_RESEND_COOLDOWN_SECONDS = 60
 OTP_MAX_ATTEMPTS = 5
 PASSWORD_ITERATIONS = 600_000
+
+
+def _database_timestamp(value):
+    if not value:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, datetime):
+        return value.timestamp()
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
 
 
 def _canonicalize_role(role):
@@ -4951,6 +5147,7 @@ def _canonicalize_role(role):
         ROLE_CUSTOMER.lower(): ROLE_CUSTOMER,
         ROLE_BUILDER.lower(): ROLE_BUILDER,
         ROLE_VENDOR.lower(): ROLE_VENDOR,
+        ROLE_ADMIN.lower(): ROLE_ADMIN,
         "customer": ROLE_CUSTOMER,
         "builder": ROLE_BUILDER,
         "builder / contractor": ROLE_BUILDER,
@@ -4958,6 +5155,7 @@ def _canonicalize_role(role):
         "dealer": ROLE_VENDOR,
         "dealer / supplier": ROLE_VENDOR,
         "supplier": ROLE_VENDOR,
+        "admin": ROLE_ADMIN,
     }
     return aliases.get(lookup, normalized)
 
@@ -5042,6 +5240,10 @@ def _persisted_accounts_path():
     return Path(__file__).resolve().with_name("buildatlas_users.json")
 
 
+def _local_file_fallback_enabled():
+    return os.getenv("BUILDATLAS_ALLOW_LOCAL_FILE_FALLBACK", "").lower() == "true"
+
+
 def _load_persisted_accounts():
     path = _persisted_accounts_path()
     if not path.exists():
@@ -5073,6 +5275,24 @@ def _save_persisted_accounts(accounts):
 
 
 def _accounts():
+    if db.is_configured():
+        accounts = []
+        for user in db.list_auth_users():
+            account = dict(user)
+            account["profile"] = db.get_profile(user)
+            account["password_salt"] = user.get("password_salt", "")
+            account["password_hash"] = user.get("password_hash", "")
+            account["db_user_id"] = user.get("id")
+            for field in ("otp_expires_at", "otp_last_sent_at"):
+                if account.get(field):
+                    account[field] = _database_timestamp(account[field])
+            accounts.append(account)
+        return accounts
+    if not _local_file_fallback_enabled():
+        raise db.DatabaseConfigurationError(
+            "Supabase is required for persistent accounts. Configure SUPABASE_URL and SUPABASE_KEY, "
+            "or explicitly set BUILDATLAS_ALLOW_LOCAL_FILE_FALLBACK=true for local-only development."
+        )
     persisted_accounts = _load_persisted_accounts()
     normalized_persisted = []
     changed_persisted = False
@@ -5144,6 +5364,17 @@ def _accounts():
 
 
 def _find_account(identifier):
+    if db.is_configured():
+        account = db.get_user(identifier)
+        if account:
+            account["profile"] = db.get_profile(account)
+            account["password_salt"] = account.get("password_salt", "")
+            account["password_hash"] = account.get("password_hash", "")
+            account["db_user_id"] = account.get("id")
+            for field in ("otp_expires_at", "otp_last_sent_at"):
+                if account.get(field):
+                    account[field] = _database_timestamp(account[field])
+        return account
     normalized_identifier = identifier.strip()
     narrowed_email = normalized_identifier.lower()
     return next(
@@ -5174,6 +5405,16 @@ def _issue_otp(account):
         account["otp_expires_at"] = now + OTP_TTL_SECONDS
         account["otp_attempts"] = 0
         account["otp_invalidated"] = False
+        if db.is_configured():
+            db.update_user(account["id"], {
+                "otp_salt": account["otp_salt"], "otp_hash": account["otp_hash"],
+                "otp_expires_at": datetime.fromtimestamp(account["otp_expires_at"], tz=timezone.utc).isoformat(),
+                "otp_attempts": 0, "otp_invalidated": False,
+                "otp_last_sent_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+                "otp_delivery_status": True,
+            })
+            st.session_state["pending_verification"] = account.get("email", "")
+            return True, ""
         persisted_accounts = _load_persisted_accounts()
         for persisted_account in persisted_accounts:
             if (
@@ -5273,7 +5514,7 @@ def _start_authenticated_session(account):
         st.session_state.update({"dealer_business_name": profile.get("business_name", "BuildAtlas Materials Supply"), "dealer_contact_name": profile.get("contact_name", "Material Partner"), "dealer_phone": account.get("phone", "")})
     st.session_state["user_role"] = role
     st.session_state["authenticated"] = True
-    default_pages = {ROLE_CUSTOMER: "🏠  Customer Dashboard", ROLE_BUILDER: "🏗️  Builder Dashboard", ROLE_VENDOR: "🛒  Dealer Dashboard"}
+    default_pages = {ROLE_CUSTOMER: "🏠  Customer Dashboard", ROLE_BUILDER: "🏗️  Builder Dashboard", ROLE_VENDOR: "📦  Vendor Dashboard", ROLE_ADMIN: "🛡️  Admin Dashboard"}
     st.session_state["active_page"] = default_pages[role]
     st.rerun()
 
@@ -5324,6 +5565,8 @@ def _render_otp_verification():
                   f"expires_in={account.get('otp_expires_at', 0) - time.time():.0f}s, "
                   f"delivery_status={account.get('otp_delivery_status')}")
             account["otp_attempts"] = account.get("otp_attempts", 0) + 1
+            if db.is_configured():
+                db.update_user(account["id"], {"otp_attempts": account["otp_attempts"], "otp_invalidated": account.get("otp_invalidated", False)})
             if account["otp_attempts"] >= OTP_MAX_ATTEMPTS:
                 account["otp_invalidated"] = True
                 for key in ("otp_salt", "otp_hash", "otp_expires_at"):
@@ -5336,17 +5579,17 @@ def _render_otp_verification():
             otp_fields = ("otp_salt", "otp_hash", "otp_expires_at", "otp_attempts")
             for key in otp_fields:
                 account.pop(key, None)
-            persisted_accounts = _load_persisted_accounts()
-            for persisted_account in persisted_accounts:
-                if (
-                    isinstance(persisted_account, dict)
-                    and persisted_account.get("email") == account.get("email")
-                ):
-                    persisted_account["verified"] = True
-                    for key in otp_fields:
-                        persisted_account.pop(key, None)
-                    break
-            _save_persisted_accounts(persisted_accounts)
+            if db.is_configured():
+                db.update_user(account["id"], {"verified": True, "otp_salt": None, "otp_hash": None, "otp_expires_at": None, "otp_attempts": 0, "otp_invalidated": False})
+            else:
+                persisted_accounts = _load_persisted_accounts()
+                for persisted_account in persisted_accounts:
+                    if isinstance(persisted_account, dict) and persisted_account.get("email") == account.get("email"):
+                        persisted_account["verified"] = True
+                        for key in otp_fields:
+                            persisted_account.pop(key, None)
+                        break
+                _save_persisted_accounts(persisted_accounts)
             st.session_state.pop("pending_verification", None)
             st.success("Account verified. Signing you in...")
             _start_authenticated_session(account)
@@ -5375,10 +5618,15 @@ def show_login_screen():
         return
 
     access_mode = st.radio("Account access", ("Login", "Register"), horizontal=True, key="access_mode")
-    role_label = st.selectbox("Choose your role", tuple(ROLE_LABELS.values()), index=None, placeholder="Select a role", key="role_selector")
+    role_options = tuple(label for key, label in ROLE_LABELS.items() if access_mode == "Login" or key != ROLE_ADMIN)
+    role_label = st.selectbox("Choose your role", role_options, index=None, placeholder="Select a role", key="role_selector")
     role = next((key for key, label in ROLE_LABELS.items() if label == role_label), None)
     if role is None:
         st.info("Select a role to continue.")
+        return
+
+    if not db.is_configured() and not _local_file_fallback_enabled():
+        st.error("Supabase is not configured. Add SUPABASE_URL and SUPABASE_KEY to Streamlit secrets before using BuildAtlas.")
         return
 
     if os.getenv("DEBUG_AUTH") == "1":
@@ -5432,7 +5680,7 @@ def show_login_screen():
                 _start_authenticated_session(account)
         return
 
-    st.caption("Registration and account data are stored only in this Streamlit session.")
+    st.caption("Registration and account data are stored securely in the central BuildAtlas database.")
     with st.form("registration_form"):
         full_name = st.text_input("Full name *")
         email = st.text_input("Email address *")
@@ -5454,9 +5702,14 @@ def show_login_screen():
             errors.append("Password must be 10+ characters with uppercase, lowercase, number, and symbol.")
         if password != confirm_password:
             errors.append("Password and confirm password must match.")
-        if any(account.get("email", "") == normalized_email for account in _accounts() if isinstance(account, dict)):
+        try:
+            existing_accounts = _accounts()
+        except db.DatabaseConfigurationError as exc:
+            st.error(str(exc))
+            return
+        if any(account.get("email", "") == normalized_email for account in existing_accounts if isinstance(account, dict)):
             errors.append("An account with this email already exists.")
-        if any(account.get("phone", "") == normalized_phone for account in _accounts() if isinstance(account, dict)):
+        if any(account.get("phone", "") == normalized_phone for account in existing_accounts if isinstance(account, dict)):
             errors.append("An account with this phone number already exists.")
         if errors:
             for error in errors:
@@ -5473,20 +5726,22 @@ def show_login_screen():
             "verified": False,
             "profile": {"full_name": full_name.strip()},
         }
-        accounts = _accounts()
         try:
-            accounts.append(account)
-            _save_persisted_accounts(accounts)
-            reloaded_accounts = _load_persisted_accounts()
-            persisted_emails = {item.get("email") for item in reloaded_accounts if isinstance(item, dict) and item.get("email")}
-            if account.get("email", "") not in persisted_emails:
-                st.error("Account could not be saved. Please try again or contact support.")
-                return
-        except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            if db.is_configured():
+                created_user = db.create_user(account)
+                profile_data = {"full_name": full_name.strip(), "business_name": full_name.strip(), "contact_name": full_name.strip(), "phone": normalized_phone}
+                db.create_profile(account["role"], created_user["id"], profile_data)
+                account.update(created_user, db_user_id=created_user["id"], profile=profile_data)
+            else:
+                accounts = _accounts()
+                accounts.append(account)
+                _save_persisted_accounts(accounts)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError, db.DatabaseOperationError) as exc:
             st.error(f"Account could not be saved: {exc}")
             return
 
-        st.session_state["auth_accounts"] = accounts
+        if not db.is_configured():
+            st.session_state["auth_accounts"] = existing_accounts + [account]
         delivery_configured, delivery_message = _issue_otp(account)
         st.success("Account created as unverified. Verify the OTP before logging in.")
         if not delivery_configured:
@@ -5524,7 +5779,7 @@ ROLE_PAGE_CONFIG = {
         ("👤  Profile", "👤", builder_profile),
     ),
     "DEALER / SUPPLIER": (
-        ("🛒  Dealer Dashboard", "🛒", dealer_dashboard),
+        ("📦  Vendor Dashboard", "📦", dealer_dashboard),
         ("📦  Product Catalogue", "📦", dealer_catalogue),
         ("📊  Inventory", "📊", dealer_inventory),
         ("💬  Enquiries", "💬", dealer_enquiries),
@@ -5534,6 +5789,9 @@ ROLE_PAGE_CONFIG = {
         ("📈  Analytics", "📈", dealer_sales_analytics),
         ("⭐  Reviews", "⭐", dealer_reviews),
         ("🏢  Profile", "🏢", dealer_profile),
+    ),
+    "ADMIN": (
+        ("🛡️  Admin Dashboard", "🛡️", admin_dashboard),
     ),
 }
 
