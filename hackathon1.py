@@ -25,8 +25,6 @@ import hashlib
 import hmac
 import secrets
 import uuid
-import smtplib
-from email.message import EmailMessage
 from importlib import import_module
 import google.generativeai as genai
 import streamlit.components.v1 as components
@@ -5126,13 +5124,27 @@ PASSWORD_ITERATIONS = 600_000
 
 
 def _database_timestamp(value):
+    """Convert a DB-returned timestamp to a UTC epoch float.
+
+    IMPORTANT: DB drivers frequently return naive datetimes (or ISO strings
+    without an offset) for values that were actually stored as UTC. Calling
+    .timestamp() on a naive datetime makes Python assume it's in the
+    *local* system timezone, which silently shifts the value by your UTC
+    offset (e.g. -5:30 for IST) and made OTPs appear expired instantly.
+    We explicitly attach UTC tzinfo whenever it's missing.
+    """
     if not value:
         return None
     if isinstance(value, (int, float)):
         return float(value)
     if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
         return value.timestamp()
-    return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
 
 
 def _canonicalize_role(role):
@@ -5466,7 +5478,7 @@ def _issue_otp(account):
     return True, ""
 
 
-def _smtp_setting(name, default=""):
+def _resend_setting(name, default=""):
     """Read a top-level Streamlit secret, with environment fallback."""
     try:
         value = st.secrets.get(name)
@@ -5477,94 +5489,63 @@ def _smtp_setting(name, default=""):
     return os.getenv(name, default).strip()
 
 
-def _smtp_settings():
-    username = _smtp_setting("SMTP_USERNAME")
-    password = _smtp_setting("SMTP_PASSWORD")
-    return {
-        "host": _smtp_setting("SMTP_HOST"),
-        "port": _smtp_setting("SMTP_PORT", "587"),
-        "username": username,
-        "password": "".join(password.split()),
-        "sender": _smtp_setting("SMTP_FROM_EMAIL") or username,
-    }
-
-
 def get_smtp_configuration_status():
-    """Return only boolean SMTP configuration status, never secret values."""
-    settings = _smtp_settings()
+    """Return only boolean email-delivery configuration status, never secret values."""
+    api_key = _resend_setting("RESEND_API_KEY")
+    sender = _resend_setting("SMTP_FROM_EMAIL")
     return {
-        "SMTP_HOST": bool(settings["host"]),
-        "SMTP_PORT": bool(settings["port"]),
-        "SMTP_USERNAME": bool(settings["username"]),
-        "SMTP_PASSWORD": bool(settings["password"]),
-        "SMTP_FROM_EMAIL": bool(settings["sender"]),
+        "RESEND_API_KEY": bool(api_key),
+        "SMTP_FROM_EMAIL": bool(sender),
     }
 
 
 def deliver_otp(account, otp):
-    """Send an OTP through configured SMTP without exposing or persisting it."""
+    """Send an OTP via the Resend HTTP API (port 443) instead of raw SMTP.
+
+    Streamlit Community Cloud's outbound network frequently blocks SMTP
+    ports (587/465), which is the #1 cause of persistent 'SMTP email
+    delivery failed' errors there. Sending over HTTPS avoids that entirely.
+    """
     st.session_state.pop("smtp_delivery_error", None)
-    settings = _smtp_settings()
-    diagnostic = {
-        "host": settings["host"] or "<missing>",
-        "port": settings["port"] or "<missing>",
-        "username_set": bool(settings["username"]),
-        "password_set": bool(settings["password"]),
-        "sender_set": bool(settings["sender"]),
-    }
-    try:
-        port = int(settings["port"])
-    except ValueError:
-        st.session_state["smtp_delivery_error"] = "SMTP_PORT must be an integer."
-        print(f"SMTP configuration error: {diagnostic}; port is not an integer.")
-        return False
-    if not 1 <= port <= 65535:
-        st.session_state["smtp_delivery_error"] = "SMTP_PORT is outside the valid range."
-        print(f"SMTP configuration error: {diagnostic}; port is outside the valid range.")
-        return False
+    api_key = _resend_setting("RESEND_API_KEY")
+    sender = _resend_setting("SMTP_FROM_EMAIL")
+    diagnostic = {"api_key_set": bool(api_key), "sender_set": bool(sender)}
+
     missing_settings = [name for name, present in {
-        "SMTP_HOST": bool(settings["host"]),
-        "SMTP_USERNAME": bool(settings["username"]),
-        "SMTP_PASSWORD": bool(settings["password"]),
-        "SMTP_FROM_EMAIL": bool(settings["sender"]),
+        "RESEND_API_KEY": bool(api_key),
+        "SMTP_FROM_EMAIL": bool(sender),
     }.items() if not present]
     if missing_settings:
-        st.session_state["smtp_delivery_error"] = f"Missing SMTP setting(s): {', '.join(missing_settings)}."
-        print(f"SMTP configuration error: {diagnostic}; missing {', '.join(missing_settings)}.")
+        st.session_state["smtp_delivery_error"] = f"Missing email setting(s): {', '.join(missing_settings)}."
+        print(f"Email configuration error: {diagnostic}; missing {', '.join(missing_settings)}.")
         return False
 
-    message = EmailMessage()
-    message["Subject"] = "BuildAtlas email verification"
-    message["From"] = settings["sender"]
-    message["To"] = account.get("email", "")
-    message.set_content(
-        "Your BuildAtlas verification code is valid for five minutes. "
-        "Enter it in the verification screen to activate your account.\n\n"
-        f"Verification code: {otp}"
-    )
+    recipient = account.get("email", "")
+    payload = {
+        "from": sender,
+        "to": [recipient],
+        "subject": "BuildAtlas email verification",
+        "text": (
+            "Your BuildAtlas verification code is valid for five minutes. "
+            "Enter it in the verification screen to activate your account.\n\n"
+            f"Verification code: {otp}"
+        ),
+    }
     try:
-        with smtplib.SMTP(settings["host"], port, timeout=15) as smtp:
-            smtp.ehlo()
-            smtp.starttls()
-            smtp.ehlo()
-            smtp.login(settings["username"], settings["password"])
-            refused_recipients = smtp.send_message(message)
-            if refused_recipients:
-                st.session_state["smtp_delivery_error"] = "The SMTP server refused the recipient."
-                print("SMTP delivery failed: recipient was refused.")
-                return False
-        return True
-    except smtplib.SMTPAuthenticationError as error:
-        st.session_state["smtp_delivery_error"] = "SMTP authentication failed. Check the Gmail App Password and username."
-        print(f"SMTP delivery failed: {diagnostic}; type={type(error).__name__}; code={getattr(error, 'smtp_code', None)}.")
+        response = requests.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=15,
+        )
+        if response.status_code in (200, 201, 202):
+            return True
+        st.session_state["smtp_delivery_error"] = f"Email provider rejected the request (status {response.status_code})."
+        print(f"Email delivery failed: {diagnostic}; status={response.status_code}; body={response.text[:300]}.")
         return False
-    except smtplib.SMTPRecipientsRefused as error:
-        st.session_state["smtp_delivery_error"] = "The SMTP server refused the recipient."
-        print(f"SMTP delivery failed: {diagnostic}; type={type(error).__name__}; code={getattr(error, 'smtp_code', None)}.")
-        return False
-    except (OSError, smtplib.SMTPException) as error:
-        st.session_state["smtp_delivery_error"] = "SMTP connection or TLS negotiation failed."
-        print(f"SMTP delivery failed: {diagnostic}; type={type(error).__name__}; code={getattr(error, 'smtp_code', None)}.")
+    except requests.RequestException as error:
+        st.session_state["smtp_delivery_error"] = "Could not reach the email provider. Check network settings and try again."
+        print(f"Email delivery failed: {diagnostic}; type={type(error).__name__}; error={error}.")
         return False
 
 
