@@ -5646,7 +5646,7 @@ def _render_otp_verification():
     account = pending_account
     if db.is_configured() and email:
         database_account = _find_account(email)
-        if database_account and pending_account and database_account.get("otp_hash") == pending_account.get("otp_hash"):
+        if database_account and pending_account and database_account.get("id") == pending_account.get("id"):
             account = {**database_account, **{
                 key: pending_account.get(key)
                 for key in ("otp_salt", "otp_hash", "otp_expires_at", "otp_attempts", "otp_invalidated", "otp_last_sent_at", "otp_delivery_status")
