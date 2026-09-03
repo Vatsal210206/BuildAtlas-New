@@ -5491,6 +5491,17 @@ def _smtp_setting(name, default=""):
     return os.getenv(name, default).strip()
 
 
+def _smtp_setting_source(name):
+    """Return where an SMTP setting is loaded from without exposing its value."""
+    try:
+        value = st.secrets.get(name)
+        if value is not None and str(value).strip():
+            return "st.secrets"
+    except (FileNotFoundError, KeyError, RuntimeError):
+        pass
+    return "environment" if os.getenv(name, "").strip() else "missing"
+
+
 def _smtp_settings():
     username = _smtp_setting("SMTP_USERNAME")
     password = _smtp_setting("SMTP_PASSWORD")
@@ -5519,7 +5530,18 @@ def deliver_otp(account, otp):
     """Send an OTP using Gmail-compatible SMTP STARTTLS."""
     st.session_state.pop("smtp_delivery_error", None)
     settings = _smtp_settings()
-    diagnostic = {"host": settings["host"] or "<missing>", "port": settings["port"] or "<missing>", "username_set": bool(settings["username"]), "password_set": bool(settings["password"]), "sender_set": bool(settings["sender"])}
+    diagnostic = {
+        "host": settings["host"] or "<missing>",
+        "port": settings["port"] or "<missing>",
+        "username": settings["username"] or "<missing>",
+        "username_set": bool(settings["username"]),
+        "password_set": bool(settings["password"]),
+        "sender_set": bool(settings["sender"]),
+        "sources": {name: _smtp_setting_source(name) for name in (
+            "SMTP_HOST", "SMTP_PORT", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM_EMAIL"
+        )},
+    }
+    print(f"SMTP configuration loaded: {diagnostic}")
     try:
         port = int(settings["port"])
     except ValueError:
@@ -5546,28 +5568,33 @@ def deliver_otp(account, otp):
     message["From"] = settings["sender"]
     message["To"] = account.get("email", "")
     message.set_content("Your BuildAtlas verification code is valid for five minutes. Enter it in the verification screen to activate your account.\n\n" f"Verification code: {otp}")
+    stage = "connection"
     try:
         with smtplib.SMTP(settings["host"], port, timeout=15) as smtp:
             smtp.ehlo()
+            stage = "TLS"
             smtp.starttls()
             smtp.ehlo()
+            stage = "authentication"
             smtp.login(settings["username"], settings["password"])
-            if smtp.send_message(message):
+            stage = "send_message"
+            refused_recipients = smtp.send_message(message)
+            if refused_recipients:
                 st.session_state["smtp_delivery_error"] = "The SMTP server refused the recipient."
                 print(f"SMTP delivery failed: {diagnostic}; recipient refused.")
                 return False
         return True
     except smtplib.SMTPAuthenticationError as error:
         st.session_state["smtp_delivery_error"] = "SMTP authentication failed. Check the Gmail App Password and username."
-        print(f"SMTP delivery failed: {diagnostic}; type={type(error).__name__}; code={getattr(error, 'smtp_code', None)}.")
+        print(f"SMTP delivery failed: stage={stage}; {diagnostic}; type={type(error).__name__}; code={getattr(error, 'smtp_code', None)}; message={getattr(error, 'smtp_error', b'').decode(errors='replace') if isinstance(getattr(error, 'smtp_error', b''), bytes) else getattr(error, 'smtp_error', '')}.")
         return False
     except smtplib.SMTPRecipientsRefused as error:
         st.session_state["smtp_delivery_error"] = "The SMTP server refused the recipient."
-        print(f"SMTP delivery failed: {diagnostic}; type={type(error).__name__}; code={getattr(error, 'smtp_code', None)}.")
+        print(f"SMTP delivery failed: stage={stage}; {diagnostic}; type={type(error).__name__}; code={getattr(error, 'smtp_code', None)}; message={getattr(error, 'smtp_error', b'').decode(errors='replace') if isinstance(getattr(error, 'smtp_error', b''), bytes) else getattr(error, 'smtp_error', '')}.")
         return False
     except (OSError, smtplib.SMTPException) as error:
         st.session_state["smtp_delivery_error"] = "SMTP connection or TLS negotiation failed."
-        print(f"SMTP delivery failed: {diagnostic}; type={type(error).__name__}; code={getattr(error, 'smtp_code', None)}.")
+        print(f"SMTP delivery failed: stage={stage}; {diagnostic}; type={type(error).__name__}; code={getattr(error, 'smtp_code', None)}; message={getattr(error, 'smtp_error', b'').decode(errors='replace') if isinstance(getattr(error, 'smtp_error', b''), bytes) else getattr(error, 'smtp_error', '')}.")
         return False
 
 
