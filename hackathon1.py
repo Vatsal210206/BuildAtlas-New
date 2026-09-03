@@ -5491,6 +5491,7 @@ def get_smtp_configuration_status():
 
 def deliver_otp(account, otp):
     """Send an OTP through configured SMTP without exposing or persisting it."""
+    st.session_state.pop("smtp_delivery_error", None)
     settings = {
         "host": _smtp_setting("SMTP_HOST"),
         "username": _smtp_setting("SMTP_USERNAME"),
@@ -5500,13 +5501,16 @@ def deliver_otp(account, otp):
     try:
         port = int(_smtp_setting("SMTP_PORT", "587"))
     except ValueError:
+        st.session_state["smtp_delivery_error"] = "SMTP_PORT must be an integer."
         print("SMTP configuration error: SMTP_PORT must be an integer.")
         return False
     if not 1 <= port <= 65535:
+        st.session_state["smtp_delivery_error"] = "SMTP_PORT is outside the valid range."
         print("SMTP configuration error: SMTP_PORT is outside the valid range.")
         return False
     missing_settings = [name for name, value in settings.items() if not value]
     if missing_settings:
+        st.session_state["smtp_delivery_error"] = f"Missing SMTP setting(s): {', '.join(missing_settings)}."
         print(f"SMTP configuration error: missing {', '.join(missing_settings)}.")
         return False
 
@@ -5521,14 +5525,26 @@ def deliver_otp(account, otp):
     )
     try:
         with smtplib.SMTP(settings["host"], port, timeout=15) as smtp:
+            smtp.ehlo()
             smtp.starttls()
+            smtp.ehlo()
             smtp.login(settings["username"], settings["password"])
             refused_recipients = smtp.send_message(message)
             if refused_recipients:
+                st.session_state["smtp_delivery_error"] = "The SMTP server refused the recipient."
                 print("SMTP delivery failed: recipient was refused.")
                 return False
         return True
+    except smtplib.SMTPAuthenticationError:
+        st.session_state["smtp_delivery_error"] = "SMTP authentication failed. Check the Gmail App Password and username."
+        print("SMTP delivery failed: authentication was rejected.")
+        return False
+    except smtplib.SMTPRecipientsRefused:
+        st.session_state["smtp_delivery_error"] = "The SMTP server refused the recipient."
+        print("SMTP delivery failed: recipient was refused.")
+        return False
     except (OSError, smtplib.SMTPException):
+        st.session_state["smtp_delivery_error"] = "SMTP connection or TLS negotiation failed."
         print("SMTP delivery failed while connecting or authenticating.")
         return False
 
@@ -5569,7 +5585,8 @@ def _render_otp_verification():
         if missing:
             st.error(f"Email verification is unavailable until SMTP credentials are configured. Missing: {missing}.")
         else:
-            st.error("SMTP email delivery failed. Check the SMTP server configuration and request a new OTP.")
+            smtp_error = st.session_state.get("smtp_delivery_error")
+            st.error(smtp_error or "SMTP email delivery failed. Check the SMTP server configuration and request a new OTP.")
     with st.form("otp_verification_form"):
         otp = st.text_input("One-time password", max_chars=6, placeholder="6-digit OTP")
         verify = st.form_submit_button("Verify OTP", type="primary", use_container_width=True)
