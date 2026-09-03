@@ -11,6 +11,11 @@ import os
 import re
 from typing import Any, Dict, Iterable, List, Optional
 
+try:
+    from postgrest.exceptions import APIError
+except ImportError:  # pragma: no cover - available with the Supabase client
+    APIError = Exception
+
 
 class DatabaseConfigurationError(RuntimeError):
     """Raised when Supabase has not been configured for this deployment."""
@@ -77,6 +82,16 @@ def _one(response: Any) -> Optional[Dict[str, Any]]:
     return rows[0] if rows else None
 
 
+def _log_api_error(error: APIError) -> None:
+    details = {
+        "code": getattr(error, "code", None),
+        "message": getattr(error, "message", None),
+        "details": getattr(error, "details", None),
+        "hint": getattr(error, "hint", None),
+    }
+    print(f"Supabase APIError: {details}")
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -117,26 +132,38 @@ def create_user(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def update_user(user_id: str, fields: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    unsupported = set(fields) - USER_UPDATE_COLUMNS
+    if not isinstance(fields, dict):
+        raise DatabaseOperationError("User update fields must be a dictionary.")
+    compatible_fields = dict(fields)
+    unsupported = set(compatible_fields) - USER_UPDATE_COLUMNS
     if unsupported:
         names = ", ".join(sorted(unsupported))
         raise DatabaseOperationError(f"Unsupported users table field(s): {names}")
+    if not compatible_fields:
+        return None
     client = connect()
     try:
-        response = client.table("users").update(dict(fields)).eq("id", user_id).execute()
-    except Exception as exc:
+        response = client.table("users").update(compatible_fields).eq("id", user_id).execute()
+    except APIError as exc:
+        _log_api_error(exc)
         code = getattr(exc, "code", None)
-        message = str(getattr(exc, "message", exc))
+        message = " ".join(str(value) for value in (
+            getattr(exc, "message", ""), getattr(exc, "details", ""), getattr(exc, "hint", "")
+        ) if value)
         missing_column = re.search(r"Could not find the '([^']+)' column", message)
         if code != "PGRST204" or not missing_column:
             raise
         column = missing_column.group(1)
-        if column not in fields or column not in USER_UPDATE_COLUMNS:
+        if column not in compatible_fields or column not in USER_UPDATE_COLUMNS:
             raise
-        compatible_fields = {key: value for key, value in fields.items() if key != column}
+        compatible_fields = {key: value for key, value in compatible_fields.items() if key != column}
         if not compatible_fields:
             return None
-        response = client.table("users").update(compatible_fields).eq("id", user_id).execute()
+        try:
+            response = client.table("users").update(compatible_fields).eq("id", user_id).execute()
+        except APIError as retry_error:
+            _log_api_error(retry_error)
+            raise
     return _one(response)
 
 
