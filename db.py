@@ -14,7 +14,8 @@ from typing import Any, Dict, Iterable, List, Optional
 try:
     from postgrest.exceptions import APIError
 except ImportError:  # pragma: no cover - available with the Supabase client
-    APIError = Exception
+    class APIError(Exception):
+        """Fallback type used when the Supabase client is unavailable locally."""
 
 
 class DatabaseConfigurationError(RuntimeError):
@@ -92,6 +93,12 @@ def _log_api_error(error: APIError) -> None:
     print(f"Supabase APIError: {details}")
 
 
+def _api_error_message(error: APIError) -> str:
+    return " ".join(str(value) for value in (
+        getattr(error, "message", ""), getattr(error, "details", ""), getattr(error, "hint", "")
+    ) if value)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -142,29 +149,22 @@ def update_user(user_id: str, fields: Dict[str, Any]) -> Optional[Dict[str, Any]
     if not compatible_fields:
         return None
     client = connect()
-    try:
-        response = client.table("users").update(compatible_fields).eq("id", user_id).execute()
-    except APIError as exc:
-        _log_api_error(exc)
-        code = getattr(exc, "code", None)
-        message = " ".join(str(value) for value in (
-            getattr(exc, "message", ""), getattr(exc, "details", ""), getattr(exc, "hint", "")
-        ) if value)
-        missing_column = re.search(r"Could not find the '([^']+)' column", message)
-        if code != "PGRST204" or not missing_column:
-            raise
-        column = missing_column.group(1)
-        if column not in compatible_fields or column not in USER_UPDATE_COLUMNS:
-            raise
-        compatible_fields = {key: value for key, value in compatible_fields.items() if key != column}
-        if not compatible_fields:
-            return None
+    while compatible_fields:
         try:
             response = client.table("users").update(compatible_fields).eq("id", user_id).execute()
-        except APIError as retry_error:
-            _log_api_error(retry_error)
-            raise
-    return _one(response)
+            return _one(response)
+        except APIError as exc:
+            _log_api_error(exc)
+            code = getattr(exc, "code", None)
+            message = _api_error_message(exc)
+            missing_column = re.search(r"Could not find the '([^']+)' column", message)
+            if code == "PGRST204" and missing_column:
+                column = missing_column.group(1)
+                if column in compatible_fields and column in USER_UPDATE_COLUMNS:
+                    compatible_fields.pop(column)
+                    continue
+            raise DatabaseOperationError(f"Supabase users update failed: {message or 'unknown API error'}") from exc
+    return None
 
 
 def get_profile(user: Dict[str, Any]) -> Dict[str, Any]:

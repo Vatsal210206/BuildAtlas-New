@@ -5575,20 +5575,20 @@ def _render_otp_verification():
         verify = st.form_submit_button("Verify OTP", type="primary", use_container_width=True)
     if verify:
         otp_clean = otp.strip()
-        if time.time() > account.get("otp_expires_at", 0):
-            st.error("This OTP has expired. Request a new OTP.")
-        elif account.get("otp_invalidated") or account.get("otp_attempts", 0) >= OTP_MAX_ATTEMPTS:
-            account["otp_invalidated"] = True
-            for key in ("otp_salt", "otp_hash", "otp_expires_at"):
-                account.pop(key, None)
-            st.error("Too many OTP attempts. Request a new OTP.")
-        elif not account.get("otp_delivery_status"):
+        if not account.get("otp_delivery_status"):
             status = get_smtp_configuration_status()
             missing = ", ".join(name for name, is_set in status.items() if not is_set)
             if missing:
                 st.error(f"Email verification is unavailable until SMTP credentials are configured. Missing: {missing}.")
             else:
                 st.error("SMTP email delivery failed. Request a new OTP after checking the SMTP configuration.")
+        elif time.time() > account.get("otp_expires_at", 0):
+            st.error("This OTP has expired. Request a new OTP.")
+        elif account.get("otp_invalidated") or account.get("otp_attempts", 0) >= OTP_MAX_ATTEMPTS:
+            account["otp_invalidated"] = True
+            for key in ("otp_salt", "otp_hash", "otp_expires_at"):
+                account.pop(key, None)
+            st.error("Too many OTP attempts. Request a new OTP.")
         elif (
             not account.get("otp_salt")
             or not account.get("otp_hash")
