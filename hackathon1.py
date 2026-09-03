@@ -5581,20 +5581,23 @@ def deliver_otp(account, otp):
     message["To"] = account.get("email", "")
     message.set_content("Your BuildAtlas verification code is valid for five minutes. Enter it in the verification screen to activate your account.\n\n" f"Verification code: {otp}")
     stage = "connection"
+    smtp = None
+    send_succeeded = False
     try:
-        with smtplib.SMTP(settings["host"], port, timeout=15) as smtp:
-            smtp.ehlo()
-            stage = "TLS"
-            smtp.starttls()
-            smtp.ehlo()
-            stage = "authentication"
-            smtp.login(settings["username"], settings["password"])
-            stage = "send_message"
-            refused_recipients = smtp.send_message(message)
-            if refused_recipients:
-                st.session_state["smtp_delivery_error"] = "The SMTP server refused the recipient."
-                print(f"SMTP delivery failed: {diagnostic}; recipient refused.")
-                return False
+        smtp = smtplib.SMTP(settings["host"], port, timeout=15)
+        smtp.ehlo()
+        stage = "TLS"
+        smtp.starttls()
+        smtp.ehlo()
+        stage = "authentication"
+        smtp.login(settings["username"], settings["password"])
+        stage = "send_message"
+        refused_recipients = smtp.send_message(message)
+        if refused_recipients:
+            st.session_state["smtp_delivery_error"] = "The SMTP server refused the recipient."
+            print(f"SMTP delivery failed: {diagnostic}; recipient refused.")
+            return False
+        send_succeeded = True
         return True
     except smtplib.SMTPAuthenticationError as error:
         st.session_state["smtp_delivery_error"] = "SMTP authentication failed. Check the Gmail App Password and username."
@@ -5605,9 +5608,19 @@ def deliver_otp(account, otp):
         print(f"SMTP delivery failed: stage={stage}; {diagnostic}; type={type(error).__name__}; code={getattr(error, 'smtp_code', None)}; message={getattr(error, 'smtp_error', b'').decode(errors='replace') if isinstance(getattr(error, 'smtp_error', b''), bytes) else getattr(error, 'smtp_error', '')}.")
         return False
     except (OSError, smtplib.SMTPException) as error:
+        if send_succeeded:
+            print(f"SMTP cleanup failed after successful send: {diagnostic}; type={type(error).__name__}; code={getattr(error, 'smtp_code', None)}.")
+            return True
         st.session_state["smtp_delivery_error"] = "SMTP connection or TLS negotiation failed."
         print(f"SMTP delivery failed: stage={stage}; {diagnostic}; type={type(error).__name__}; code={getattr(error, 'smtp_code', None)}; message={getattr(error, 'smtp_error', b'').decode(errors='replace') if isinstance(getattr(error, 'smtp_error', b''), bytes) else getattr(error, 'smtp_error', '')}.")
         return False
+    finally:
+        if smtp is not None:
+            try:
+                smtp.quit()
+            except (OSError, smtplib.SMTPException) as error:
+                if send_succeeded:
+                    print(f"SMTP cleanup failed after successful send: {diagnostic}; type={type(error).__name__}; code={getattr(error, 'smtp_code', None)}.")
 
 
 def _start_authenticated_session(account):
