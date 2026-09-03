@@ -25,6 +25,8 @@ import hashlib
 import hmac
 import secrets
 import uuid
+import smtplib
+from email.message import EmailMessage
 from importlib import import_module
 import google.generativeai as genai
 import streamlit.components.v1 as components
@@ -5478,7 +5480,7 @@ def _issue_otp(account):
     return True, ""
 
 
-def _resend_setting(name, default=""):
+def _smtp_setting(name, default=""):
     """Read a top-level Streamlit secret, with environment fallback."""
     try:
         value = st.secrets.get(name)
@@ -5489,63 +5491,83 @@ def _resend_setting(name, default=""):
     return os.getenv(name, default).strip()
 
 
+def _smtp_settings():
+    username = _smtp_setting("SMTP_USERNAME")
+    password = _smtp_setting("SMTP_PASSWORD")
+    return {
+        "host": _smtp_setting("SMTP_HOST"),
+        "port": _smtp_setting("SMTP_PORT", "587"),
+        "username": username,
+        "password": "".join(password.split()),
+        "sender": _smtp_setting("SMTP_FROM_EMAIL") or username,
+    }
+
+
 def get_smtp_configuration_status():
     """Return only boolean email-delivery configuration status, never secret values."""
-    api_key = _resend_setting("RESEND_API_KEY")
-    sender = _resend_setting("SMTP_FROM_EMAIL")
+    settings = _smtp_settings()
     return {
-        "RESEND_API_KEY": bool(api_key),
-        "SMTP_FROM_EMAIL": bool(sender),
+        "SMTP_HOST": bool(settings["host"]),
+        "SMTP_PORT": bool(settings["port"]),
+        "SMTP_USERNAME": bool(settings["username"]),
+        "SMTP_PASSWORD": bool(settings["password"]),
+        "SMTP_FROM_EMAIL": bool(settings["sender"]),
     }
 
 
 def deliver_otp(account, otp):
-    """Send an OTP via the Resend HTTP API (port 443) instead of raw SMTP.
-
-    Streamlit Community Cloud's outbound network frequently blocks SMTP
-    ports (587/465), which is the #1 cause of persistent 'SMTP email
-    delivery failed' errors there. Sending over HTTPS avoids that entirely.
-    """
+    """Send an OTP using Gmail-compatible SMTP STARTTLS."""
     st.session_state.pop("smtp_delivery_error", None)
-    api_key = _resend_setting("RESEND_API_KEY")
-    sender = _resend_setting("SMTP_FROM_EMAIL")
-    diagnostic = {"api_key_set": bool(api_key), "sender_set": bool(sender)}
-
+    settings = _smtp_settings()
+    diagnostic = {"host": settings["host"] or "<missing>", "port": settings["port"] or "<missing>", "username_set": bool(settings["username"]), "password_set": bool(settings["password"]), "sender_set": bool(settings["sender"])}
+    try:
+        port = int(settings["port"])
+    except ValueError:
+        st.session_state["smtp_delivery_error"] = "SMTP_PORT must be an integer."
+        print(f"SMTP configuration error: {diagnostic}; port is not an integer.")
+        return False
+    if not 1 <= port <= 65535:
+        st.session_state["smtp_delivery_error"] = "SMTP_PORT is outside the valid range."
+        print(f"SMTP configuration error: {diagnostic}; port is outside the valid range.")
+        return False
     missing_settings = [name for name, present in {
-        "RESEND_API_KEY": bool(api_key),
-        "SMTP_FROM_EMAIL": bool(sender),
+        "SMTP_HOST": bool(settings["host"]),
+        "SMTP_USERNAME": bool(settings["username"]),
+        "SMTP_PASSWORD": bool(settings["password"]),
+        "SMTP_FROM_EMAIL": bool(settings["sender"]),
     }.items() if not present]
     if missing_settings:
-        st.session_state["smtp_delivery_error"] = f"Missing email setting(s): {', '.join(missing_settings)}."
-        print(f"Email configuration error: {diagnostic}; missing {', '.join(missing_settings)}.")
+        st.session_state["smtp_delivery_error"] = f"Missing SMTP setting(s): {', '.join(missing_settings)}."
+        print(f"SMTP configuration error: {diagnostic}; missing {', '.join(missing_settings)}.")
         return False
 
-    recipient = account.get("email", "")
-    payload = {
-        "from": sender,
-        "to": [recipient],
-        "subject": "BuildAtlas email verification",
-        "text": (
-            "Your BuildAtlas verification code is valid for five minutes. "
-            "Enter it in the verification screen to activate your account.\n\n"
-            f"Verification code: {otp}"
-        ),
-    }
+    message = EmailMessage()
+    message["Subject"] = "BuildAtlas email verification"
+    message["From"] = settings["sender"]
+    message["To"] = account.get("email", "")
+    message.set_content("Your BuildAtlas verification code is valid for five minutes. Enter it in the verification screen to activate your account.\n\n" f"Verification code: {otp}")
     try:
-        response = requests.post(
-            "https://api.resend.com/emails",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=payload,
-            timeout=15,
-        )
-        if response.status_code in (200, 201, 202):
-            return True
-        st.session_state["smtp_delivery_error"] = f"Email provider rejected the request (status {response.status_code})."
-        print(f"Email delivery failed: {diagnostic}; status={response.status_code}; body={response.text[:300]}.")
+        with smtplib.SMTP(settings["host"], port, timeout=15) as smtp:
+            smtp.ehlo()
+            smtp.starttls()
+            smtp.ehlo()
+            smtp.login(settings["username"], settings["password"])
+            if smtp.send_message(message):
+                st.session_state["smtp_delivery_error"] = "The SMTP server refused the recipient."
+                print(f"SMTP delivery failed: {diagnostic}; recipient refused.")
+                return False
+        return True
+    except smtplib.SMTPAuthenticationError as error:
+        st.session_state["smtp_delivery_error"] = "SMTP authentication failed. Check the Gmail App Password and username."
+        print(f"SMTP delivery failed: {diagnostic}; type={type(error).__name__}; code={getattr(error, 'smtp_code', None)}.")
         return False
-    except requests.RequestException as error:
-        st.session_state["smtp_delivery_error"] = "Could not reach the email provider. Check network settings and try again."
-        print(f"Email delivery failed: {diagnostic}; type={type(error).__name__}; error={error}.")
+    except smtplib.SMTPRecipientsRefused as error:
+        st.session_state["smtp_delivery_error"] = "The SMTP server refused the recipient."
+        print(f"SMTP delivery failed: {diagnostic}; type={type(error).__name__}; code={getattr(error, 'smtp_code', None)}.")
+        return False
+    except (OSError, smtplib.SMTPException) as error:
+        st.session_state["smtp_delivery_error"] = "SMTP connection or TLS negotiation failed."
+        print(f"SMTP delivery failed: {diagnostic}; type={type(error).__name__}; code={getattr(error, 'smtp_code', None)}.")
         return False
 
 
