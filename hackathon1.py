@@ -2767,8 +2767,38 @@ def material_marketplace():
     
     st.markdown('<h1 class="main-header">🧱 Material Marketplace</h1>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">Premium construction materials from trusted suppliers</p>', unsafe_allow_html=True)
-    
-    df_materials = get_materials_database()
+
+    # Try to load real products from Supabase first
+    df_materials = None
+    if db.is_configured():
+        try:
+            products = db.list_public_products()
+            if products:
+                # Transform Supabase format to customer marketplace format
+                transformed = []
+                for p in products:
+                    if isinstance(p, dict):
+                        transformed.append({
+                            "name": p.get("product_name", ""),
+                            "category": p.get("category", ""),
+                            "brand": p.get("brand", ""),
+                            "supplier": p.get("supplier", "Vendor"),
+                            "price": float(p.get("price", 0)),
+                            "unit": p.get("unit", ""),
+                            "stock": int(p.get("stock_quantity", 0)),
+                            "delivery_days": int(p.get("delivery_time", 0)),
+                            "rating": 0.0,  # No rating data in Supabase products table yet
+                        })
+                if transformed:
+                    df_materials = pd.DataFrame(transformed)
+        except Exception as e:
+            print(f"Error loading products from Supabase: {e}")
+            df_materials = None
+
+    # Fall back to dummy products if no real products available
+    if df_materials is None or df_materials.empty:
+        df_materials = get_materials_database()
+
     st.markdown('<div class="ba-divider"></div>', unsafe_allow_html=True)
     
     st.markdown("### 🔍 Filter & Search", help="Find materials by category, price, rating")
@@ -5658,7 +5688,7 @@ def _render_otp_verification():
     account = pending_account
     if db.is_configured() and email:
         database_account = _find_account(email)
-        if database_account and pending_account and database_account.get("id") == pending_account.get("id"):
+        if database_account and pending_account and database_account.get("otp_hash") == pending_account.get("otp_hash"):
             account = {**database_account, **{
                 key: pending_account.get(key)
                 for key in ("otp_salt", "otp_hash", "otp_expires_at", "otp_attempts", "otp_invalidated", "otp_last_sent_at", "otp_delivery_status")

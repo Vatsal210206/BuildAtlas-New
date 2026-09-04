@@ -268,6 +268,40 @@ def find_product(product_name: str, supplier: str) -> Optional[Dict[str, Any]]:
     return next((row for row in rows if supplier.lower() in str(row.get("brand", "")).lower() or supplier.lower() in str(row.get("product_name", "")).lower()), rows[0] if rows else None)
 
 
+def list_public_products() -> List[Dict[str, Any]]:
+    """Fetch all vendor-added products for customer marketplace.
+
+    Retrieves all products from the products table and enriches them with
+    vendor business names from vendor_profiles. If a vendor profile is not found,
+    uses a generic 'Vendor' label.
+    """
+    try:
+        # Fetch all products
+        response = connect().table("products").select("*").order("created_at").execute()
+        products = _rows(response)
+
+        if not products:
+            return []
+
+        # Fetch all vendor profiles to map vendor_id -> business_name
+        vendor_response = connect().table("vendor_profiles").select("user_id, business_name").execute()
+        vendor_profiles = _rows(vendor_response)
+
+        # Build vendor_id -> business_name map
+        vendor_name_map = {vp["user_id"]: vp["business_name"] for vp in vendor_profiles if isinstance(vp, dict)}
+
+        # Add supplier field to each product
+        for product in products:
+            if isinstance(product, dict):
+                vendor_id = product.get("vendor_id")
+                product["supplier"] = vendor_name_map.get(vendor_id, "Vendor")
+
+        return products
+    except Exception as e:
+        _log_api_error(e) if isinstance(e, APIError) else print(f"Error fetching public products: {e}")
+        return []
+
+
 def list_project_quote_requests() -> List[Dict[str, Any]]:
     rows = _rows(connect().table("project_quote_requests").select("*").order("created_at", desc=True).execute())
     return [{**row.get("payload", {}), "request_id": row.get("request_id"), "status": row.get("status", "New"), "created_at": row.get("created_at", ""), "updated_at": row.get("updated_at", "")} for row in rows]
