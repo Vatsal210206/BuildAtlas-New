@@ -1050,15 +1050,15 @@ def preprocess_image(image):
 
 def ocr_with_api(image_file):
     """
-    Extract bill text through Eden AI's V3 OCR endpoint.
+    Extract bill text through Eden AI's OCR endpoint.
     """
     try:
         try:
-            api_key = st.secrets["EDEN_AI_API_KEY"]
+            api_key = str(st.secrets["EDEN_AI_API_KEY"]).strip()
         except (KeyError, FileNotFoundError, RuntimeError):
             return {"success": False, "error": "Missing EDEN_AI_API_KEY in Streamlit Secrets", "text": ""}
 
-        if not str(api_key).strip():
+        if not api_key:
             return {"success": False, "error": "Missing EDEN_AI_API_KEY in Streamlit Secrets", "text": ""}
 
         image_file.seek(0)
@@ -1073,62 +1073,38 @@ def ocr_with_api(image_file):
         image_bytes = img_byte_arr.getvalue()
         headers = {"Authorization": f"Bearer {api_key}"}
 
-        # Eden AI V3 first stores the uploaded bytes and returns a file_id.
-        upload_response = requests.post(
-            "https://api.edenai.run/v3/upload",
+        response = requests.post(
+            "https://api.edenai.run/v2/ocr/ocr/",
             headers=headers,
             files={"file": ("bill.png", image_bytes, "image/png")},
-            data={"purpose": "ocr"},
+            data={"providers": "google", "language": "en"},
             timeout=30
         )
-        if not 200 <= upload_response.status_code < 300:
+        if not 200 <= response.status_code < 300:
+            auth_diagnostic = "EDEN_AI_API_KEY present, length " + str(len(api_key))
             return {
                 "success": False,
-                "error": f"Eden AI upload error {upload_response.status_code}: {upload_response.text[:500]}",
+                "error": f"Eden AI OCR error {response.status_code} ({auth_diagnostic}): {response.text[:500]}",
                 "text": ""
             }
         try:
-            upload_json = upload_response.json()
-        except ValueError as e:
-            return {"success": False, "error": f"Invalid Eden AI upload JSON: {e}", "text": ""}
-
-        file_id = upload_json.get("file_id")
-        if not file_id:
-            return {"success": False, "error": "Eden AI upload response did not contain file_id", "text": ""}
-
-        ocr_response = requests.post(
-            "https://api.edenai.run/v3/universal-ai",
-            headers={**headers, "Content-Type": "application/json"},
-            json={
-                "model": "ocr/ocr/google",
-                "input": {"file": file_id, "language": "en"}
-            },
-            timeout=30
-        )
-        if not 200 <= ocr_response.status_code < 300:
-            return {
-                "success": False,
-                "error": f"Eden AI OCR error {ocr_response.status_code}: {ocr_response.text[:500]}",
-                "text": ""
-            }
-        try:
-            ocr_json = ocr_response.json()
+            result = response.json()
         except ValueError as e:
             return {"success": False, "error": f"Invalid Eden AI OCR JSON: {e}", "text": ""}
 
-        if not isinstance(ocr_json, dict):
+        if not isinstance(result, dict):
             return {"success": False, "error": "Unexpected Eden AI OCR JSON response", "text": ""}
-        if ocr_json.get("status") != "success":
-            output = ocr_json.get("output") if isinstance(ocr_json.get("output"), dict) else {}
-            provider_error = ocr_json.get("error") or ocr_json.get("message") or output.get("error")
-            return {"success": False, "error": f"Eden AI OCR failed: {provider_error or 'Unknown provider error'}", "text": ""}
 
-        output = ocr_json.get("output")
-        if not isinstance(output, dict):
-            return {"success": False, "error": "Eden AI OCR response did not contain output.text", "text": ""}
-        ocr_text = output.get("text")
+        provider_result = result.get("google")
+        if not isinstance(provider_result, dict):
+            return {"success": False, "error": "Eden AI OCR response did not contain google provider data", "text": ""}
+        if provider_result.get("status") != "success":
+            provider_error = provider_result.get("error") or provider_result.get("message") or "Unknown provider error"
+            return {"success": False, "error": f"Eden AI OCR failed: {provider_error}", "text": ""}
+
+        ocr_text = provider_result.get("text")
         if not isinstance(ocr_text, str):
-            return {"success": False, "error": "Eden AI OCR response did not contain output.text", "text": ""}
+            return {"success": False, "error": "Eden AI OCR response did not contain google.text", "text": ""}
         return {"success": True, "error": "", "text": ocr_text.strip()}
     
     except requests.exceptions.Timeout:
