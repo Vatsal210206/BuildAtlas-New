@@ -35,7 +35,6 @@ from typing import List, Tuple, Dict, Optional
 from enum import Enum
 from floorplan_engine import LayoutSolver, calculate_vastu_score, calculate_cost, render_professional_floorplan
 import traceback
-import subprocess
 from concept_generator.ui_flow import concept_layout_generator_page
 from dotenv import load_dotenv
 import db
@@ -5493,102 +5492,7 @@ def _otp_state_matches(account, expected):
     )
 
 
-def _safe_git_commit() -> str:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=False,
-            cwd=str(Path(__file__).resolve().parent),
-        )
-        commit = (result.stdout or "").strip()
-        return commit[:12] if commit else "unavailable"
-    except Exception:
-        return "unavailable"
-
-
-def _otp_debug_stage(stage: str, **fields):
-    lines = [f"OTP_DEBUG_STAGE={stage}"]
-    for key, value in fields.items():
-        if isinstance(value, bool):
-            display = "True" if value else "False"
-        elif value is None:
-            display = "None"
-        else:
-            display = str(value)
-        lines.append(f"{key}: {display}")
-    message = "\n".join(lines)
-    print(message)
-    st.info(message)
-
-
-def _safe_response_metadata(payload):
-    if payload is None:
-        return {"type": "NoneType"}
-    payload_type = type(payload).__name__
-    if isinstance(payload, dict):
-        return {"type": payload_type, "keys": sorted(payload.keys())}
-    if isinstance(payload, list):
-        return {"type": payload_type, "length": len(payload)}
-    return {"type": payload_type}
-
-
-def _otp_status_code(exc):
-    for attr in ("status_code", "status", "code", "http_status"):
-        value = getattr(exc, attr, None)
-        if value not in (None, ""):
-            return value
-    return "n/a"
-
-
-def _redact_secret_text(value: str) -> str:
-    if not value:
-        return value
-    redacted = re.sub(r"https?://[^\s'\"<>]+", lambda match: match.group(0).split("@", 1)[0] + "@redacted" if "@" in match.group(0) else "[REDACTED_URL]", value)
-    redacted = re.sub(r"(?i)(SUPABASE_[A-Z_]+|API_KEY|api_key|apikey|authorization|password|secret|token|smtp_password|smtp_username)\s*[:=]\s*['\"]?[^\s'\"<>]+", r"\\1=[REDACTED]", redacted)
-    redacted = re.sub(r"(?i)(supabase_url|supabase_key)\s*[:=]\s*['\"]?[^\s'\"<>]+", r"\\1=[REDACTED]", redacted)
-    return redacted
-
-
-def _show_otp_database_debug_error(operation: str, exc: Exception):
-    sanitized = _redact_secret_text(str(exc) or exc.__class__.__name__)
-    st.error(
-        "OTP DATABASE DEBUG\n"
-        f"Operation: {operation}\n"
-        f"Exception type: {exc.__class__.__name__}\n"
-        f"Safe error: {sanitized}\n"
-        f"Status/code: {_otp_status_code(exc)}"
-    )
-
-
-def _otp_state_failure_category(account, expected):
-    if not isinstance(account, dict):
-        return "other"
-    if account.get("otp_salt") != expected.get("otp_salt"):
-        return "salt_missing" if not account.get("otp_salt") or not expected.get("otp_salt") else "other"
-    if account.get("otp_hash") != expected.get("otp_hash"):
-        return "hash_missing" if not account.get("otp_hash") or not expected.get("otp_hash") else "other"
-    try:
-        actual_expiry = _database_timestamp(account.get("otp_expires_at"))
-        expected_expiry = _database_timestamp(expected.get("otp_expires_at"))
-        actual_attempts = int(account.get("otp_attempts", -1))
-        expected_attempts = int(expected.get("otp_attempts", -2))
-    except (TypeError, ValueError, OverflowError):
-        return "other"
-    if actual_expiry is None or expected_expiry is None:
-        return "expiry_missing"
-    if actual_attempts != expected_attempts:
-        return "attempts_mismatch"
-    if bool(account.get("otp_invalidated")) != bool(expected.get("otp_invalidated")):
-        return "invalidation_mismatch"
-    if bool(account.get("otp_delivery_status")) != bool(expected.get("otp_delivery_status")):
-        return "other"
-    return "other"
-
-
 def _issue_otp(account):
-    _otp_debug_stage("OTP_DEBUG_COMMIT", commit=_safe_git_commit())
     now = time.time()
     st.session_state.pop("smtp_delivery_error", None)
     st.session_state.pop("otp_state_error", None)
@@ -5625,46 +5529,14 @@ def _issue_otp(account):
         "otp_last_sent_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
         "otp_delivery_status": False,
     }
-
-    _otp_debug_stage(
-        "before_initial_db_write",
-        db_configured=db.is_configured(),
-        account_found=bool(account),
-        account_id_present=bool(account.get("id")),
-        field_names=list(pending_fields.keys()),
-    )
-
     if db.is_configured():
         try:
-            update_result = db.update_user(account["id"], pending_fields)
-            _otp_debug_stage(
-                "initial_db_write_returned",
-                success=True,
-                return_type=type(update_result).__name__,
-                response_metadata=_safe_response_metadata(update_result),
-            )
+            db.update_user(account["id"], pending_fields)
             persisted_account = _find_account(account["email"])
-            _otp_debug_stage(
-                "otp_readback",
-                account_found=isinstance(persisted_account, dict),
-                otp_salt_present=bool(isinstance(persisted_account, dict) and persisted_account.get("otp_salt")),
-                otp_hash_present=bool(isinstance(persisted_account, dict) and persisted_account.get("otp_hash")),
-                otp_expires_at_present=bool(isinstance(persisted_account, dict) and persisted_account.get("otp_expires_at")),
-                otp_attempts=int(persisted_account.get("otp_attempts", 0)) if isinstance(persisted_account, dict) else 0,
-                otp_invalidated=bool(isinstance(persisted_account, dict) and persisted_account.get("otp_invalidated")),
-                otp_delivery_status=bool(isinstance(persisted_account, dict) and persisted_account.get("otp_delivery_status")),
-            )
-            state_match = _otp_state_matches(persisted_account, pending_fields)
-            _otp_debug_stage(
-                "state_match",
-                state_match=state_match,
-                failure_category=_otp_state_failure_category(persisted_account, pending_fields) if not state_match else "none",
-            )
-            if not state_match:
+            if not _otp_state_matches(persisted_account, pending_fields):
                 raise db.DatabaseOperationError("OTP state could not be confirmed after persistence.")
-        except Exception as exc:
-            _show_otp_database_debug_error("db.update_user/_find_account OTP preparation", exc)
-            return False, f"Database write failed: {_redact_secret_text(str(exc) or exc.__class__.__name__)}"
+        except (db.DatabaseConfigurationError, db.DatabaseOperationError):
+            return False, "The OTP could not be prepared in the database. Please try again."
     else:
         persisted_accounts = _load_persisted_accounts()
         for persisted_account in persisted_accounts:
@@ -5677,20 +5549,15 @@ def _issue_otp(account):
                 break
         _save_persisted_accounts(persisted_accounts)
 
-    _otp_debug_stage(
-        "before_smtp",
-        database_preparation_confirmed=True,
-    )
     delivered = deliver_otp(account, otp)
-    _otp_debug_stage("after_smtp", delivery_result=bool(delivered))
     if not delivered:
         account.update({"otp_salt": None, "otp_hash": None, "otp_expires_at": 0, "otp_delivery_status": False, "otp_last_sent_at": 0})
         clear_fields = {"otp_salt": None, "otp_hash": None, "otp_expires_at": None, "otp_last_sent_at": None, "otp_delivery_status": False}
         if db.is_configured():
             try:
                 db.update_user(account["id"], clear_fields)
-            except Exception as exc:
-                _show_otp_database_debug_error("db.update_user OTP rollback", exc)
+            except (db.DatabaseConfigurationError, db.DatabaseOperationError):
+                pass
         else:
             persisted_accounts = _load_persisted_accounts()
             for persisted_account in persisted_accounts:
@@ -5714,15 +5581,13 @@ def _issue_otp(account):
     if db.is_configured():
         try:
             db.update_user(account["id"], delivered_fields)
-        except Exception as exc:
-            _show_otp_database_debug_error("db.update_user OTP delivery status", exc)
+        except (db.DatabaseConfigurationError, db.DatabaseOperationError):
             st.session_state["otp_state_error"] = "OTP sent, but delivery status could not be saved. The code remains valid."
         try:
             persisted_account = _find_account(account["email"])
             if not _otp_state_matches(persisted_account, {**pending_fields, **delivered_fields}):
                 st.session_state["otp_state_error"] = "OTP delivery status could not be confirmed. The code remains valid."
-        except Exception as exc:
-            _show_otp_database_debug_error("_find_account OTP delivery status", exc)
+        except (db.DatabaseConfigurationError, db.DatabaseOperationError):
             st.session_state["otp_state_error"] = "OTP sent, but its state could not be confirmed. The code remains valid."
     else:
         persisted_accounts = _load_persisted_accounts()
@@ -5865,15 +5730,13 @@ def _start_authenticated_session(account):
 
 
 def _render_otp_verification():
-    st.caption(f"OTP_DEBUG_COMMIT={_safe_git_commit()}")
     email = st.session_state.get("pending_verification")
     pending_account = st.session_state.get("pending_verification_account")
     account = None
     if db.is_configured() and email:
         try:
             account = _find_account(email)
-        except Exception as exc:
-            _show_otp_database_debug_error("_find_account verification load", exc)
+        except (db.DatabaseConfigurationError, db.DatabaseOperationError):
             account = pending_account
     else:
         account = pending_account
@@ -5911,30 +5774,15 @@ def _render_otp_verification():
         else:
             st.error("OTP is unavailable. Request a new OTP.")
     if verify:
-        _otp_debug_stage(
-            "verification_load",
-            account_found=bool(account),
-            otp_salt_present=bool(account.get("otp_salt")),
-            otp_hash_present=bool(account.get("otp_hash")),
-            otp_expires_at_present=bool(account.get("otp_expires_at") is not None),
-            otp_attempts=int(account.get("otp_attempts", 0)),
-            otp_invalidated=bool(account.get("otp_invalidated")),
-            otp_delivery_status=bool(account.get("otp_delivery_status")),
-            expired=bool(expires_at is not None and time.time() > expires_at),
-        )
         otp_clean = otp.strip()
         if not otp_state_exists:
-            _otp_debug_stage("verification_decision", decision="missing_state")
             st.error("OTP is no longer valid. Request a new OTP.")
         elif time.time() > expires_at:
-            _otp_debug_stage("verification_decision", decision="expired")
             st.error("This OTP has expired. Request a new OTP.")
         elif account.get("otp_invalidated") or account.get("otp_attempts", 0) >= OTP_MAX_ATTEMPTS:
             if account.get("otp_attempts", 0) >= OTP_MAX_ATTEMPTS:
-                _otp_debug_stage("verification_decision", decision="max_attempts")
                 st.error("Too many OTP attempts. Request a new OTP.")
             else:
-                _otp_debug_stage("verification_decision", decision="invalidated")
                 st.error("OTP is no longer valid. Request a new OTP.")
         else:
             regex_match = bool(re.fullmatch(r"\d{6}", otp_clean))
@@ -5943,29 +5791,12 @@ def _render_otp_verification():
                 if regex_match
                 else None
             )
-            if not regex_match:
-                _otp_debug_stage("verification_decision", decision="invalid_format")
+            if not regex_match or not verify_result:
                 account["otp_attempts"] = account.get("otp_attempts", 0) + 1
                 if db.is_configured():
                     try:
                         db.update_user(account["id"], {"otp_attempts": account["otp_attempts"], "otp_invalidated": account.get("otp_invalidated", False)})
-                    except Exception as exc:
-                        _show_otp_database_debug_error("db.update_user verification attempts", exc)
-                        st.error("OTP verification could not be completed. Please try again.")
-                        return
-                if account["otp_attempts"] >= OTP_MAX_ATTEMPTS:
-                    account["otp_invalidated"] = True
-                    st.error("Too many OTP attempts. Request a new OTP.")
-                else:
-                    st.error("Invalid OTP. Please check the latest email and try again.")
-            elif not verify_result:
-                _otp_debug_stage("verification_decision", decision="hash_mismatch")
-                account["otp_attempts"] = account.get("otp_attempts", 0) + 1
-                if db.is_configured():
-                    try:
-                        db.update_user(account["id"], {"otp_attempts": account["otp_attempts"], "otp_invalidated": account.get("otp_invalidated", False)})
-                    except Exception as exc:
-                        _show_otp_database_debug_error("db.update_user verification hash mismatch", exc)
+                    except (db.DatabaseConfigurationError, db.DatabaseOperationError):
                         st.error("OTP verification could not be completed. Please try again.")
                         return
                 if account["otp_attempts"] >= OTP_MAX_ATTEMPTS:
@@ -5974,13 +5805,11 @@ def _render_otp_verification():
                 else:
                     st.error("Invalid OTP. Please check the latest email and try again.")
             else:
-                _otp_debug_stage("verification_decision", decision="verified")
                 verified_fields = {"verified": True, "otp_salt": None, "otp_hash": None, "otp_expires_at": None, "otp_attempts": 0, "otp_invalidated": False}
                 if db.is_configured():
                     try:
                         db.update_user(account["id"], verified_fields)
-                    except Exception as exc:
-                        _show_otp_database_debug_error("db.update_user verification success", exc)
+                    except (db.DatabaseConfigurationError, db.DatabaseOperationError):
                         st.error("Account verification could not be saved. Please try again.")
                         return
                     updated_account = _find_account(account.get("email", ""))
