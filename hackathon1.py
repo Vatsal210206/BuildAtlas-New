@@ -5768,6 +5768,10 @@ def _render_otp_verification():
         st.session_state.pop("pending_verification", None)
         st.session_state.pop("pending_verification_account", None)
         return
+    try:
+        account["otp_expires_at"] = _database_timestamp(account.get("otp_expires_at"))
+    except (TypeError, ValueError, OverflowError):
+        account["otp_expires_at"] = None
     st.markdown("### Verify your account")
     st.caption("Enter the OTP sent to your registered contact. The code expires shortly.")
     if not account.get("otp_delivery_status") and not account.get("otp_salt") and not account.get("otp_hash"):
