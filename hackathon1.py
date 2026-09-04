@@ -1541,12 +1541,26 @@ def bill_scanner():
     st.markdown('<h1 class="main-header">🧾 AI Bill Scanner</h1>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">OCR-powered material invoice analysis</p>', unsafe_allow_html=True)
 
+    if "ocr_scan_success" not in st.session_state:
+        st.session_state["ocr_scan_success"] = False
+    if "ocr_scan_file_id" not in st.session_state:
+        st.session_state["ocr_scan_file_id"] = None
+
     col1, col2 = st.columns([1, 2])
 
     with col1:
         st.markdown('<div class="ba-card">', unsafe_allow_html=True)
         st.markdown('<div class="ba-card-title">📁 Upload Invoice</div>', unsafe_allow_html=True)
         uploaded_file = st.file_uploader("Drop bill image here", type=['jpg','png','jpeg','pdf'], label_visibility="collapsed")
+
+        uploaded_file_id = (
+            getattr(uploaded_file, "file_id", None),
+            getattr(uploaded_file, "name", None),
+            getattr(uploaded_file, "size", None),
+        ) if uploaded_file else None
+        if st.session_state["ocr_scan_file_id"] != uploaded_file_id:
+            st.session_state["ocr_scan_file_id"] = uploaded_file_id
+            st.session_state["ocr_scan_success"] = False
 
         if uploaded_file:
             image = Image.open(uploaded_file)
@@ -1565,6 +1579,7 @@ def bill_scanner():
 
                     # If OCR succeeded, extract and display bill data
                     if ocr_result['success'] and ocr_result['text']:
+                        st.session_state["ocr_scan_success"] = True
                         try:
                             bill_data = extract_bill_data(ocr_result['text'])
                             st.success("✅ Bill scanned successfully!")
@@ -1585,6 +1600,7 @@ def bill_scanner():
                     
                     # If OCR failed, show detailed error
                     else:
+                        st.session_state["ocr_scan_success"] = False
                         st.error("❌ OCR Processing Failed")
                         if ocr_result.get('error'):
                             st.error(f"**Error Details:** {ocr_result['error']}")
@@ -1601,8 +1617,9 @@ def bill_scanner():
         
         st.markdown('</div>', unsafe_allow_html=True)
 
-    with col2:
-        st.markdown("""
+    if st.session_state["ocr_scan_success"]:
+        with col2:
+            st.markdown("""
         <div class="ba-card">
           <div class="ba-card-title">📊 Scanned Data Analysis</div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
@@ -1626,18 +1643,18 @@ def bill_scanner():
             </div>
           </div>
         </div>
-        """, unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
 
-        # Dummy chart placeholder
-        fig = px.bar(
-            pd.DataFrame({'Material': ['Cement', 'Steel', 'Bricks', 'Sand', 'Aggregate'],
-                          'Cost': [250000, 380000, 120000, 85000, 65000]}),
-            x='Material', y='Cost', title="📦 Typical Material Cost Distribution",
-            color='Cost', color_continuous_scale=['#1e2d42','#00e5b0']
-        )
-        fig = apply_dark(fig)
-        fig.update_coloraxes(showscale=False)
-        st.plotly_chart(fig, use_container_width=True)
+            # Dummy chart placeholder
+            fig = px.bar(
+                pd.DataFrame({'Material': ['Cement', 'Steel', 'Bricks', 'Sand', 'Aggregate'],
+                              'Cost': [250000, 380000, 120000, 85000, 65000]}),
+                x='Material', y='Cost', title="📦 Typical Material Cost Distribution",
+                color='Cost', color_continuous_scale=['#1e2d42','#00e5b0']
+            )
+            fig = apply_dark(fig)
+            fig.update_coloraxes(showscale=False)
+            st.plotly_chart(fig, use_container_width=True)
 
 # ═══════════════════════════════════════════════
 # PAGE 5 — WEATHER
