@@ -5660,6 +5660,8 @@ def deliver_otp(account, otp):
             st.session_state["smtp_delivery_error"] = "The SMTP server refused the recipient."
             print(f"SMTP delivery failed: {diagnostic}; recipient refused.")
             return False
+        # send_message returned without refusals; later QUIT cleanup errors
+        # must not invalidate an OTP that may already be delivered.
         send_succeeded = True
         return True
     except smtplib.SMTPAuthenticationError as error:
@@ -5672,7 +5674,7 @@ def deliver_otp(account, otp):
         return False
     except (OSError, smtplib.SMTPException) as error:
         if send_succeeded:
-            print(f"SMTP cleanup failed after successful send: {diagnostic}; type={type(error).__name__}; code={getattr(error, 'smtp_code', None)}.")
+            print(f"SMTP cleanup failed after successful send: stage={stage}; {diagnostic}; type={type(error).__name__}; code={getattr(error, 'smtp_code', None)}; message={getattr(error, 'smtp_error', b'').decode(errors='replace') if isinstance(getattr(error, 'smtp_error', b''), bytes) else getattr(error, 'smtp_error', '')}.")
             return True
         st.session_state["smtp_delivery_error"] = "SMTP connection or TLS negotiation failed."
         print(f"SMTP delivery failed: stage={stage}; {diagnostic}; type={type(error).__name__}; code={getattr(error, 'smtp_code', None)}; message={getattr(error, 'smtp_error', b'').decode(errors='replace') if isinstance(getattr(error, 'smtp_error', b''), bytes) else getattr(error, 'smtp_error', '')}.")
