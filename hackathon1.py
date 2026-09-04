@@ -5271,6 +5271,14 @@ def _verify_secret(value, salt_hex, digest_hex):
     return hmac.compare_digest(candidate, digest_hex)
 
 
+def _otp_debug_email(email):
+    email = str(email or "")
+    if "@" not in email:
+        return "<invalid>"
+    local, domain = email.split("@", 1)
+    return f"{local[:1]}***@{domain}"
+
+
 def _valid_email(email):
     return _normalize_email(email) is not None
 
@@ -5497,7 +5505,17 @@ def _issue_otp(account):
     if db.is_configured():
         try:
             db.update_user(account["id"], pending_fields)
-            print("OTP DATABASE_STATE_SUCCESS: pending OTP state persisted.")
+            print(
+                "OTP DATABASE_STATE_SUCCESS: pending OTP state persisted; "
+                f"email={_otp_debug_email(account.get('email'))}; "
+                f"salt_present={bool(account.get('otp_salt'))}; "
+                f"salt_len={len(account.get('otp_salt') or '')}; "
+                f"hash_present={bool(account.get('otp_hash'))}; "
+                f"hash_len={len(account.get('otp_hash') or '')}; "
+                f"delivery_status={account.get('otp_delivery_status')}; "
+                f"invalidated={account.get('otp_invalidated')}; "
+                f"attempts={account.get('otp_attempts')}"
+            )
         except Exception as error:
             print(f"OTP DATABASE_STATE_FAILURE: phase=pending; type={type(error).__name__}; code={getattr(error, 'code', None)}; message={error}")
             return False, "The OTP could not be prepared in the database. Please try again."
@@ -5552,6 +5570,17 @@ def _issue_otp(account):
                 break
         _save_persisted_accounts(persisted_accounts)
     st.session_state["pending_verification_account"] = dict(account)
+    print(
+        "OTP STATE AFTER DELIVERY: "
+        f"email={_otp_debug_email(account.get('email'))}; "
+        f"salt_present={bool(account.get('otp_salt'))}; "
+        f"salt_len={len(account.get('otp_salt') or '')}; "
+        f"hash_present={bool(account.get('otp_hash'))}; "
+        f"hash_len={len(account.get('otp_hash') or '')}; "
+        f"delivery_status={account.get('otp_delivery_status')}; "
+        f"invalidated={account.get('otp_invalidated')}; "
+        f"attempts={account.get('otp_attempts')}"
+    )
     return True, ""
 
 
@@ -5719,6 +5748,20 @@ def _render_otp_verification():
             }}
         else:
             account = database_account
+    expires_at = account.get("otp_expires_at") if isinstance(account, dict) else None
+    expires_in = expires_at - time.time() if isinstance(expires_at, (int, float)) else None
+    has_otp_salt = bool(account.get("otp_salt")) if isinstance(account, dict) else False
+    has_otp_hash = bool(account.get("otp_hash")) if isinstance(account, dict) else False
+    print(
+        "OTP VERIFICATION STATE: "
+        f"email={_otp_debug_email(email)}; "
+        f"salt_present={has_otp_salt}; salt_len={len(account.get('otp_salt') or '') if isinstance(account, dict) else 0}; "
+        f"hash_present={has_otp_hash}; hash_len={len(account.get('otp_hash') or '') if isinstance(account, dict) else 0}; "
+        f"delivery_status={account.get('otp_delivery_status') if isinstance(account, dict) else None}; "
+        f"invalidated={account.get('otp_invalidated') if isinstance(account, dict) else None}; "
+        f"attempts={account.get('otp_attempts') if isinstance(account, dict) else None}; "
+        f"expires_in={expires_in}"
+    )
     if account is None:
         account = next((item for item in _accounts() if isinstance(item, dict) and item.get("email", "") == email), None)
     if account is None:
@@ -5741,6 +5784,7 @@ def _render_otp_verification():
     if verify:
         otp_clean = otp.strip()
         if not account.get("otp_delivery_status"):
+            print("OTP VALIDATION BRANCH: delivery_status_false")
             status = get_smtp_configuration_status()
             missing = ", ".join(name for name, is_set in status.items() if not is_set)
             if missing:
@@ -5748,59 +5792,76 @@ def _render_otp_verification():
             else:
                 st.error("SMTP email delivery failed. Request a new OTP after checking the SMTP configuration.")
         elif time.time() > account.get("otp_expires_at", 0):
+            print("OTP VALIDATION BRANCH: expired")
             st.error("This OTP has expired. Request a new OTP.")
         elif account.get("otp_invalidated") or account.get("otp_attempts", 0) >= OTP_MAX_ATTEMPTS:
+            print("OTP VALIDATION BRANCH: invalidated_or_max_attempts")
             account["otp_invalidated"] = True
             for key in ("otp_salt", "otp_hash", "otp_expires_at"):
                 account.pop(key, None)
             st.error("Too many OTP attempts. Request a new OTP.")
-        elif (
-            not account.get("otp_salt")
-            or not account.get("otp_hash")
-            or not re.fullmatch(r"\d{6}", otp_clean)
-            or not _verify_secret(otp_clean, account.get("otp_salt", ""), account.get("otp_hash", ""))
-        ):
-            print(f"OTP DEBUG: entered_len={len(otp_clean)}, "
-                  f"regex_match={bool(re.fullmatch(r'\d{{6}}', otp_clean))}, "
-                  f"attempts={account.get('otp_attempts', 0)}, "
-                  f"expires_in={account.get('otp_expires_at', 0) - time.time():.0f}s, "
-                  f"delivery_status={account.get('otp_delivery_status')}")
-            account["otp_attempts"] = account.get("otp_attempts", 0) + 1
-            if db.is_configured():
-                db.update_user(account["id"], {"otp_attempts": account["otp_attempts"], "otp_invalidated": account.get("otp_invalidated", False)})
-            if account["otp_attempts"] >= OTP_MAX_ATTEMPTS:
-                account["otp_invalidated"] = True
-                for key in ("otp_salt", "otp_hash", "otp_expires_at"):
-                    account.pop(key, None)
-                st.error("Too many OTP attempts. Request a new OTP.")
-            else:
-                st.error("Invalid OTP. If you requested the code more than once, make sure you're using the code from the MOST RECENT email — older codes are automatically invalidated.")
         else:
-            account["verified"] = True
-            otp_fields = ("otp_salt", "otp_hash", "otp_expires_at", "otp_attempts")
-            for key in otp_fields:
-                account.pop(key, None)
-            if db.is_configured():
-                db.update_user(account["id"], {"verified": True, "otp_salt": None, "otp_hash": None, "otp_expires_at": None, "otp_attempts": 0, "otp_invalidated": False})
-                updated_account = _find_account(account.get("email", ""))
-                if updated_account is None:
-                    st.error("Account verification succeeded, but the account could not be reloaded.")
-                    return
-                account = updated_account
+            regex_match = bool(re.fullmatch(r"\d{6}", otp_clean))
+            verify_result = (
+                _verify_secret(otp_clean, account.get("otp_salt", ""), account.get("otp_hash", ""))
+                if account.get("otp_salt") and account.get("otp_hash") and regex_match
+                else None
+            )
+            print(
+                "OTP VALIDATION CHECK: "
+                f"email={_otp_debug_email(email)}; regex_match={regex_match}; "
+                f"verify_secret_result={verify_result}"
+            )
+            if not account.get("otp_salt") or not account.get("otp_hash"):
+                print("OTP VALIDATION BRANCH: missing_salt_or_hash")
+            elif not regex_match:
+                print("OTP VALIDATION BRANCH: invalid_format")
+            elif not verify_result:
+                print("OTP VALIDATION BRANCH: secret_mismatch")
             else:
-                persisted_accounts = _load_persisted_accounts()
-                for persisted_account in persisted_accounts:
-                    if isinstance(persisted_account, dict) and persisted_account.get("email") == account.get("email"):
-                        persisted_account["verified"] = True
-                        for key in otp_fields:
-                            persisted_account.pop(key, None)
-                        break
-                _save_persisted_accounts(persisted_accounts)
-            st.session_state.pop("pending_verification", None)
-            st.session_state.pop("pending_verification_account", None)
-            st.session_state.pop("otp_state_error", None)
-            st.success("Account verified. Signing you in...")
-            _start_authenticated_session(account)
+                print("OTP VALIDATION BRANCH: success")
+            if not account.get("otp_salt") or not account.get("otp_hash") or not regex_match or not verify_result:
+                print(f"OTP DEBUG: entered_len={len(otp_clean)}, "
+                      f"regex_match={regex_match}, "
+                      f"attempts={account.get('otp_attempts', 0)}, "
+                      f"expires_in={account.get('otp_expires_at', 0) - time.time():.0f}s, "
+                      f"delivery_status={account.get('otp_delivery_status')}")
+                account["otp_attempts"] = account.get("otp_attempts", 0) + 1
+                if db.is_configured():
+                    db.update_user(account["id"], {"otp_attempts": account["otp_attempts"], "otp_invalidated": account.get("otp_invalidated", False)})
+                if account["otp_attempts"] >= OTP_MAX_ATTEMPTS:
+                    account["otp_invalidated"] = True
+                    for key in ("otp_salt", "otp_hash", "otp_expires_at"):
+                        account.pop(key, None)
+                    st.error("Too many OTP attempts. Request a new OTP.")
+                else:
+                    st.error("Invalid OTP. If you requested the code more than once, make sure you're using the code from the MOST RECENT email — older codes are automatically invalidated.")
+            else:
+                account["verified"] = True
+                otp_fields = ("otp_salt", "otp_hash", "otp_expires_at", "otp_attempts")
+                for key in otp_fields:
+                    account.pop(key, None)
+                if db.is_configured():
+                    db.update_user(account["id"], {"verified": True, "otp_salt": None, "otp_hash": None, "otp_expires_at": None, "otp_attempts": 0, "otp_invalidated": False})
+                    updated_account = _find_account(account.get("email", ""))
+                    if updated_account is None:
+                        st.error("Account verification succeeded, but the account could not be reloaded.")
+                        return
+                    account = updated_account
+                else:
+                    persisted_accounts = _load_persisted_accounts()
+                    for persisted_account in persisted_accounts:
+                        if isinstance(persisted_account, dict) and persisted_account.get("email") == account.get("email"):
+                            persisted_account["verified"] = True
+                            for key in otp_fields:
+                                persisted_account.pop(key, None)
+                            break
+                    _save_persisted_accounts(persisted_accounts)
+                st.session_state.pop("pending_verification", None)
+                st.session_state.pop("pending_verification_account", None)
+                st.session_state.pop("otp_state_error", None)
+                st.success("Account verified. Signing you in...")
+                _start_authenticated_session(account)
     if st.button("Resend OTP", key="resend_otp"):
         delivered, message = _issue_otp(account)
         if delivered:
