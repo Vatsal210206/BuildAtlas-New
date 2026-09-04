@@ -151,7 +151,7 @@ def update_user(user_id: str, fields: Dict[str, Any]) -> Optional[Dict[str, Any]
     client = connect()
     while compatible_fields:
         try:
-            response = client.table("users").update(compatible_fields).eq("id", user_id).execute()
+            response = client.table("users").update(compatible_fields).eq("id", user_id).select("*").execute()
             updated_user = _one(response)
             if updated_user is None:
                 raise DatabaseOperationError("Supabase users update did not affect the requested user.")

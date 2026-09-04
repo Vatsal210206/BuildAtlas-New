@@ -5666,7 +5666,7 @@ def deliver_otp(account, otp):
         if smtp is not None:
             try:
                 smtp.quit()
-            except (OSError, smtplib.SMTPException) as error:
+            except Exception:
                 pass
 
 
