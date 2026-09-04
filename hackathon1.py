@@ -4525,12 +4525,94 @@ def customer_profile():
         st.success("Profile saved for this session.")
 
 
+def _normalize_portfolio_text(value, fallback=""):
+    if value is None:
+        return fallback
+    text = str(value).strip()
+    return text if text else fallback
+
+
+def _normalize_city_state(value, fallback=""):
+    text = _normalize_portfolio_text(value, fallback)
+    if not text or text == fallback:
+        return fallback
+    return " ".join(part.capitalize() for part in text.split())
+
+
+def _builder_profile_payload(data):
+    payload = {}
+    profile = data or {}
+    payload["business_name"] = _normalize_portfolio_text(profile.get("business_name"), "BuildAtlas Construction")
+    payload["contact_name"] = _normalize_portfolio_text(profile.get("contact_name"), "Build Partner")
+    payload["phone"] = _normalize_portfolio_text(profile.get("phone"), "")
+    payload["gst_number"] = "".join(ch for ch in _normalize_portfolio_text(profile.get("gst_number"), "").upper() if ch.isalnum())
+    payload["address"] = _normalize_portfolio_text(profile.get("address"), "")
+    payload["city"] = _normalize_city_state(profile.get("city"), "")
+    payload["state"] = _normalize_city_state(profile.get("state"), "")
+    payload["portfolio_summary"] = _normalize_portfolio_text(profile.get("portfolio_summary"), "")
+    payload["website"] = _normalize_portfolio_text(profile.get("website"), "")
+    specialties = profile.get("specializations")
+    if isinstance(specialties, list):
+        payload["specializations"] = ", ".join(_normalize_portfolio_text(item) for item in specialties if _normalize_portfolio_text(item))
+    elif specialties is None:
+        payload["specializations"] = ""
+    else:
+        payload["specializations"] = _normalize_portfolio_text(specialties, "")
+    return payload
+
+
+def _builder_portfolio_state():
+    account = _current_account()
+    user_id = account.get("id") if db.is_configured() else None
+    if db.is_configured() and user_id:
+        projects = db.list_builder_projects(user_id)
+        quotations = db.list_builder_quotations(user_id)
+        profile = db.get_profile(account) or {}
+        state = {
+            "builder_projects": projects,
+            "builder_quotations": quotations,
+            "builder_profile": _builder_profile_payload(profile),
+        }
+        st.session_state["builder_portfolio_state"] = state
+        return state
+
+    state = st.session_state.setdefault("builder_portfolio_state", {
+        "builder_projects": [
+            {"id": "PRJ-1001", "project_name": "Sharma Residence", "city": "Ghaziabad", "status": "Structure", "progress": 68, "value": "₹48 Lakhs", "description": "Residential structure and finishing"},
+            {"id": "PRJ-1002", "project_name": "Mehta Villa", "city": "Noida", "status": "Brickwork", "progress": 42, "value": "₹62 Lakhs", "description": "Premium villa construction"},
+        ],
+        "builder_quotations": [
+            {"id": "Q-1001", "customer_name": "Rohan Mehta", "project_name": "3BHK home construction", "amount": "₹18.5 Lakhs", "status": "Draft", "notes": "Site visit scheduled for Saturday"},
+        ],
+        "builder_profile": _builder_profile_payload({
+            "business_name": st.session_state.get("builder_company", "BuildAtlas Construction"),
+            "contact_name": st.session_state.get("builder_name", "Build Partner"),
+            "phone": st.session_state.get("builder_phone", ""),
+        }),
+    })
+    return state
+
+
 def builder_dashboard():
-    """Render the builder overview using lightweight prototype data."""
+    """Render the builder overview using live portfolio data when available."""
     st.markdown('<h1 class="main-header">🏗️ Builder Dashboard</h1>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">Your projects, leads, and delivery operations</p>', unsafe_allow_html=True)
 
+    portfolio = _builder_portfolio_state()
+    projects = portfolio.get("builder_projects", [])
+    quotations = portfolio.get("builder_quotations", [])
+    profile = portfolio.get("builder_profile", {})
+    active_project_count = sum(1 for project in projects if isinstance(project, dict))
+    quote_count = sum(1 for quote in quotations if isinstance(quote, dict))
     builder_account = _current_account()
+    company_name = profile.get("business_name", "BuildAtlas Construction")
+    st.markdown(
+        f'<div class="ba-card"><div class="ba-card-title">Welcome, {company_name}</div>'
+        f'<div style="color:#b0c9e3;font-size:14px;line-height:1.6;">'
+        f'{profile.get("portfolio_summary", "Focused on residential and commercial construction delivery.")}'
+        f'</div></div>',
+        unsafe_allow_html=True,
+    )
     verification_result = _verify_razorpay_callback(builder_account)
     subscription = builder_account.get("subscription", {})
     if subscription.get("status") == "active":
@@ -4573,21 +4655,13 @@ def builder_dashboard():
                 scrolling=False,
             )
 
-    st.markdown(
-        '<div class="ba-card"><div class="ba-card-title">Welcome, Build Partner</div>'
-        '<div style="color:#b0c9e3;font-size:14px;line-height:1.6;">'
-        'Stay ahead of customer requests, project delivery, quotations, and site requirements.'
-        '</div></div>',
-        unsafe_allow_html=True,
-    )
-
     summary_cols = st.columns(4)
     summary = [
-        ("🏗️ Active Projects", "3", "2 on schedule"),
+        ("🏗️ Active Projects", str(active_project_count or 0), "Portfolio pipeline"),
         ("👥 Customer Leads", "8", "3 new this week"),
         ("💰 Estimated Value", "₹1.42 Cr", "Across active projects"),
         ("📊 Current Progress", "64%", "Portfolio average"),
-        ("📋 Pending Quotations", "5", "2 need attention"),
+        ("📋 Pending Quotations", str(quote_count or 0), "Current pipeline"),
         ("🧱 Material Requirements", "12", "Items to source"),
     ]
     for index, (label, value, detail) in enumerate(summary):
@@ -4643,19 +4717,65 @@ def builder_dashboard():
 
 
 def builder_projects():
-    """Render the builder's current mock project list."""
+    """Render and manage builder project portfolio entries."""
     st.markdown('<h1 class="main-header">🏗️ My Projects</h1>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">Active delivery portfolio and project status</p>', unsafe_allow_html=True)
-    projects = [
-        ("Sharma Residence", "Ghaziabad", "Structure", "68%", "₹48 Lakhs"),
-        ("Mehta Villa", "Noida", "Brickwork", "42%", "₹62 Lakhs"),
-        ("Kapoor Renovation", "Delhi", "Planning", "18%", "₹32 Lakhs"),
-    ]
-    for name, location, stage, progress, value in projects:
+    portfolio = _builder_portfolio_state()
+    projects = portfolio.get("builder_projects", [])
+
+    with st.expander("➕ Add Project", expanded=False):
+        with st.form("builder_project_form"):
+            project_name = st.text_input("Project name")
+            city = st.text_input("City")
+            stage = st.text_input("Stage")
+            progress = st.slider("Progress %", 0, 100, 25)
+            value = st.text_input("Estimated value", value="₹20 Lakhs")
+            description = st.text_area("Project summary", height=100)
+            submitted = st.form_submit_button("Save Project", type="primary")
+        if submitted and project_name.strip():
+            project = {
+                "id": f"PRJ-{uuid.uuid4().hex[:8].upper()}",
+                "project_name": project_name.strip(),
+                "city": city.strip() or "N/A",
+                "status": stage.strip() or "Planning",
+                "progress": int(progress),
+                "value": value.strip() or "₹0",
+                "description": description.strip() or "Project portfolio entry",
+            }
+            if db.is_configured():
+                account = _current_account()
+                payload = {
+                    "user_id": account.get("id"),
+                    "project_name": project["project_name"],
+                    "city": project["city"],
+                    "status": project["status"],
+                    "progress": project["progress"],
+                    "estimated_value": project["value"],
+                    "description": project["description"],
+                }
+                project = db.create_builder_project(payload)
+            state = _builder_portfolio_state()
+            state["builder_projects"].insert(0, project)
+            st.session_state["builder_portfolio_state"] = state
+            st.success("Project saved to your portfolio.")
+            st.rerun()
+
+    if not projects:
+        st.info("No projects added yet. Create your first project to populate your portfolio.")
+        return
+
+    for project in projects:
+        name = project.get("project_name") or project.get("name") or "Project"
+        location = project.get("city") or project.get("location") or "N/A"
+        stage = project.get("status") or "Planning"
+        progress = project.get("progress", 0)
+        value = project.get("estimated_value") or project.get("value") or "₹0"
+        description = project.get("description") or ""
         st.markdown(
             f'<div class="ba-card"><div class="ba-card-title">{name}</div>'
             f'<div style="color:#b0c9e3;font-size:13px;line-height:1.9;">'
-            f'📍 {location}<br>🏗️ Stage: {stage}<br>📊 Progress: {progress}<br>💰 Estimated value: {value}'
+            f'📍 {location}<br>🏗️ Stage: {stage}<br>📊 Progress: {progress}%<br>💰 Estimated value: {value}'
+            f'{f"<br>📝 {description}" if description else ""}'
             '</div></div>',
             unsafe_allow_html=True,
         )
@@ -4705,9 +4825,61 @@ def builder_suppliers():
 
 
 def builder_quotations():
-    """Render and securely manage quote requests addressed to the current builder."""
+    """Render and manage builder quotations and customer requests."""
     st.markdown('<h1 class="main-header">📋 Quotations</h1>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">Review incoming construction quotation requests</p>', unsafe_allow_html=True)
+    portfolio = _builder_portfolio_state()
+    quotations = portfolio.get("builder_quotations", [])
+
+    with st.expander("➕ Create Quotation", expanded=False):
+        with st.form("builder_quote_form"):
+            customer_name = st.text_input("Customer name")
+            project_name = st.text_input("Project / scope")
+            amount = st.text_input("Quoted amount", value="₹12 Lakhs")
+            status = st.selectbox("Status", ["Draft", "Sent", "Accepted", "Rejected"], index=0)
+            notes = st.text_area("Notes", height=100)
+            submitted = st.form_submit_button("Save Quotation", type="primary")
+        if submitted and customer_name.strip():
+            quote = {
+                "id": f"Q-{uuid.uuid4().hex[:8].upper()}",
+                "customer_name": customer_name.strip(),
+                "project_name": project_name.strip() or "New project",
+                "amount": amount.strip() or "₹0",
+                "status": status,
+                "notes": notes.strip() or "Quotation prepared for customer follow-up.",
+            }
+            if db.is_configured():
+                account = _current_account()
+                payload = {
+                    "user_id": account.get("id"),
+                    "customer_name": quote["customer_name"],
+                    "project_name": quote["project_name"],
+                    "amount": quote["amount"],
+                    "status": quote["status"],
+                    "notes": quote["notes"],
+                }
+                quote = db.create_builder_quotation(payload)
+            state = _builder_portfolio_state()
+            state["builder_quotations"].insert(0, quote)
+            st.session_state["builder_portfolio_state"] = state
+            st.success("Quotation saved.")
+            st.rerun()
+
+    if quotations:
+        for quote in quotations:
+            customer = quote.get("customer_name") or "Customer"
+            project = quote.get("project_name") or "Scope"
+            status_value = quote.get("status") or "Draft"
+            amount = quote.get("amount") or quote.get("quoted_amount") or "₹0"
+            notes = quote.get("notes") or "No notes added"
+            st.markdown(
+                f'<div class="ba-card"><div class="ba-card-title">{customer} · {project}</div>'
+                f'<div style="color:#b0c9e3;font-size:13px;line-height:1.9;">'
+                f'💰 {amount}<br>📊 Status: {status_value}<br>📝 {notes}'
+                '</div></div>',
+                unsafe_allow_html=True,
+            )
+
     builder_ids = _current_builder_ids()
     requests = [request for request in _quote_requests() if request.get("builder_id") in builder_ids]
     if not requests:
@@ -4776,24 +4948,67 @@ def builder_reviews():
 
 
 def builder_profile():
-    """Render a lightweight session-only builder profile."""
+    """Render the builder profile with GST, portfolio, and contact details."""
     st.markdown('<h1 class="main-header">👤 Builder Profile</h1>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">Manage your business information</p>', unsafe_allow_html=True)
-    st.session_state.setdefault("builder_name", "Build Partner")
-    st.session_state.setdefault("builder_company", "BuildAtlas Construction")
-    st.session_state.setdefault("builder_phone", "")
+    profile = _builder_profile_payload({
+        "business_name": st.session_state.get("builder_company", "BuildAtlas Construction"),
+        "contact_name": st.session_state.get("builder_name", "Build Partner"),
+        "phone": st.session_state.get("builder_phone", ""),
+    })
+    st.session_state.setdefault("builder_name", profile.get("contact_name", "Build Partner"))
+    st.session_state.setdefault("builder_company", profile.get("business_name", "BuildAtlas Construction"))
+    st.session_state.setdefault("builder_phone", profile.get("phone", ""))
+    if db.is_configured():
+        db_profile = db.get_profile(_current_account()) or {}
+        profile = _builder_profile_payload(db_profile)
+    st.session_state.setdefault("builder_gst_number", profile.get("gst_number", ""))
+    st.session_state.setdefault("builder_address", profile.get("address", ""))
+    st.session_state.setdefault("builder_city", profile.get("city", ""))
+    st.session_state.setdefault("builder_state", profile.get("state", ""))
+    st.session_state.setdefault("builder_website", profile.get("website", ""))
+    st.session_state.setdefault("builder_specializations", profile.get("specializations", ""))
+    st.session_state.setdefault("builder_portfolio_summary", profile.get("portfolio_summary", ""))
     with st.form("builder_profile_form"):
         name = st.text_input("Contact Name", value=st.session_state["builder_name"])
         company = st.text_input("Business Name", value=st.session_state["builder_company"])
         phone = st.text_input("Phone", value=st.session_state["builder_phone"])
+        gst_number = st.text_input("GST Number", value=st.session_state.get("builder_gst_number", ""))
+        address = st.text_input("Business Address", value=st.session_state.get("builder_address", ""))
+        city = st.text_input("City", value=st.session_state.get("builder_city", ""))
+        state = st.text_input("State", value=st.session_state.get("builder_state", ""))
+        website = st.text_input("Website / Company URL", value=st.session_state.get("builder_website", ""))
+        specializations = st.text_input("Specializations", value=st.session_state.get("builder_specializations", ""), help="Separate multiple specializations with commas")
+        portfolio_summary = st.text_area("Portfolio Summary", value=st.session_state.get("builder_portfolio_summary", ""), height=120)
         submitted = st.form_submit_button("Save Profile", type="primary", use_container_width=True)
     if submitted:
-        st.session_state["builder_name"] = name or "Build Partner"
-        st.session_state["builder_company"] = company or "BuildAtlas Construction"
-        st.session_state["builder_phone"] = phone
+        payload = _builder_profile_payload({
+            "business_name": company,
+            "contact_name": name,
+            "phone": phone,
+            "gst_number": gst_number,
+            "address": address,
+            "city": city,
+            "state": state,
+            "website": website,
+            "specializations": specializations,
+            "portfolio_summary": portfolio_summary,
+        })
+        st.session_state["builder_name"] = payload["contact_name"]
+        st.session_state["builder_company"] = payload["business_name"]
+        st.session_state["builder_phone"] = payload["phone"]
+        st.session_state["builder_gst_number"] = payload["gst_number"]
+        st.session_state["builder_address"] = payload["address"]
+        st.session_state["builder_city"] = payload["city"]
+        st.session_state["builder_state"] = payload["state"]
+        st.session_state["builder_website"] = payload["website"]
+        st.session_state["builder_specializations"] = payload["specializations"]
+        st.session_state["builder_portfolio_summary"] = payload["portfolio_summary"]
         if db.is_configured():
-            db.update_profile(ROLE_BUILDER, _current_account()["id"], {"business_name": st.session_state["builder_company"], "contact_name": st.session_state["builder_name"], "phone": phone})
-        st.success("Builder profile saved for this session.")
+            db.update_profile(ROLE_BUILDER, _current_account()["id"], payload)
+            if "builder_portfolio_state" in st.session_state:
+                st.session_state["builder_portfolio_state"]["builder_profile"] = payload
+        st.success("Builder profile and portfolio details saved.")
 
 
 DEALER_LOW_STOCK_THRESHOLD = 500

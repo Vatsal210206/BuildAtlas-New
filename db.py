@@ -32,6 +32,19 @@ USER_COLUMNS = frozenset({
     "otp_last_sent_at", "otp_delivery_status", "created_at",
 })
 USER_UPDATE_COLUMNS = USER_COLUMNS - {"id", "created_at"}
+PROFILE_COLUMNS = {
+    "vendor_profiles": frozenset({
+        "id", "user_id", "business_name", "contact_name", "phone", "address", "city",
+        "state", "gst_number", "portfolio_summary", "website", "specializations", "created_at"
+    }),
+    "builder_profiles": frozenset({
+        "id", "user_id", "business_name", "contact_name", "phone", "address", "city",
+        "state", "gst_number", "portfolio_summary", "website", "specializations", "created_at"
+    }),
+    "customer_profiles": frozenset({
+        "id", "user_id", "full_name", "phone", "created_at"
+    }),
+}
 
 
 def _setting(name: str) -> str:
@@ -184,7 +197,7 @@ def create_profile(role: str, user_id: str, data: Dict[str, Any]) -> Dict[str, A
     if role == "CUSTOMER":
         payload = {"user_id": user_id, "full_name": data.get("full_name", ""), "phone": data.get("phone", "")}
     else:
-        payload = {"user_id": user_id, "business_name": data.get("business_name", ""), "contact_name": data.get("contact_name", data.get("full_name", "")), "phone": data.get("phone", ""), "address": data.get("address", ""), "city": data.get("city", ""), "state": data.get("state", "")}
+        payload = {"user_id": user_id, "business_name": data.get("business_name", ""), "contact_name": data.get("contact_name", data.get("full_name", "")), "phone": data.get("phone", ""), "address": data.get("address", ""), "city": data.get("city", ""), "state": data.get("state", ""), "gst_number": data.get("gst_number", ""), "portfolio_summary": data.get("portfolio_summary", ""), "website": data.get("website", ""), "specializations": data.get("specializations", "")}
     return _one(connect().table(table).insert(payload).execute()) or {}
 
 
@@ -193,6 +206,30 @@ def update_profile(role: str, user_id: str, fields: Dict[str, Any]) -> Optional[
     if not table:
         return None
     return _one(connect().table(table).update(fields).eq("user_id", user_id).execute())
+
+
+def list_builder_projects(user_id: str) -> List[Dict[str, Any]]:
+    return _rows(connect().table("builder_projects").select("*").eq("user_id", user_id).order("created_at", desc=True).execute())
+
+
+def create_builder_project(data: Dict[str, Any]) -> Dict[str, Any]:
+    return _one(connect().table("builder_projects").insert(data).execute()) or {}
+
+
+def update_builder_project(project_id: str, fields: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    return _one(connect().table("builder_projects").update({**fields, "updated_at": _now()}).eq("id", project_id).execute())
+
+
+def list_builder_quotations(user_id: str) -> List[Dict[str, Any]]:
+    return _rows(connect().table("builder_quotations").select("*").eq("user_id", user_id).order("created_at", desc=True).execute())
+
+
+def create_builder_quotation(data: Dict[str, Any]) -> Dict[str, Any]:
+    return _one(connect().table("builder_quotations").insert(data).execute()) or {}
+
+
+def update_builder_quotation(quote_id: str, fields: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    return _one(connect().table("builder_quotations").update({**fields, "updated_at": _now()}).eq("id", quote_id).execute())
 
 
 def vendor_products(vendor_id: str) -> List[Dict[str, Any]]:

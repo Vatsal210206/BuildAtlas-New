@@ -24,7 +24,18 @@ create table if not exists vendor_profiles (
 );
 create table if not exists builder_profiles (
     id uuid primary key default gen_random_uuid(), user_id uuid not null unique references users(id) on delete cascade,
-    business_name text not null, contact_name text not null, phone text not null, address text default '', city text default '', state text default '', created_at timestamptz not null default now()
+    business_name text not null, contact_name text not null, phone text not null, address text default '', city text default '', state text default '',
+    gst_number text default '', portfolio_summary text default '', website text default '', specializations text default '', created_at timestamptz not null default now()
+);
+create table if not exists builder_projects (
+    id uuid primary key default gen_random_uuid(), user_id uuid not null references users(id) on delete cascade,
+    project_name text not null, city text default '', status text not null default 'Planning', progress integer not null default 0 check (progress between 0 and 100),
+    estimated_value text default '', description text default '', created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+);
+create table if not exists builder_quotations (
+    id uuid primary key default gen_random_uuid(), user_id uuid not null references users(id) on delete cascade,
+    customer_name text not null default '', project_name text not null default '', amount text default '', status text not null default 'Draft' check (status in ('Draft','Sent','Accepted','Rejected')),
+    notes text default '', created_at timestamptz not null default now(), updated_at timestamptz not null default now()
 );
 create table if not exists customer_profiles (
     id uuid primary key default gen_random_uuid(), user_id uuid not null unique references users(id) on delete cascade,

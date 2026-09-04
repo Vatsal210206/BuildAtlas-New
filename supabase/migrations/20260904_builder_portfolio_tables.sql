@@ -1,0 +1,35 @@
+ALTER TABLE public.builder_profiles
+    ADD COLUMN IF NOT EXISTS gst_number text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS portfolio_summary text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS website text DEFAULT '',
+    ADD COLUMN IF NOT EXISTS specializations text DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS public.builder_projects (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    project_name text NOT NULL,
+    city text DEFAULT '',
+    status text NOT NULL DEFAULT 'Planning',
+    progress integer NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
+    estimated_value text DEFAULT '',
+    description text DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.builder_quotations (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    customer_name text NOT NULL DEFAULT '',
+    project_name text NOT NULL DEFAULT '',
+    amount text DEFAULT '',
+    status text NOT NULL DEFAULT 'Draft' CHECK (status IN ('Draft', 'Sent', 'Accepted', 'Rejected')),
+    notes text DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS builder_projects_user_id_idx ON public.builder_projects(user_id);
+CREATE INDEX IF NOT EXISTS builder_quotations_user_id_idx ON public.builder_quotations(user_id);
+
+NOTIFY pgrst, 'reload schema';
