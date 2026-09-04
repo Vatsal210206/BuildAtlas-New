@@ -5475,11 +5475,17 @@ def _find_account(identifier):
 
 def _issue_otp(account):
     now = time.time()
-    last_sent_at = account.get("otp_last_sent_at") or 0
+    st.session_state.pop("smtp_delivery_error", None)
+    st.session_state.pop("otp_state_error", None)
+    try:
+        last_sent_at = _database_timestamp(account.get("otp_last_sent_at")) or 0
+    except (TypeError, ValueError, OverflowError):
+        last_sent_at = 0
     st.session_state["pending_verification"] = account.get("email", "")
     st.session_state["pending_verification_account"] = dict(account)
-    if now - last_sent_at < OTP_RESEND_COOLDOWN_SECONDS:
-        return False, "Please wait before requesting another OTP."
+    cooldown_remaining = OTP_RESEND_COOLDOWN_SECONDS - (now - last_sent_at)
+    if cooldown_remaining > 0:
+        return False, f"A code was already sent. Please wait {max(1, int(cooldown_remaining))} seconds before requesting another OTP."
 
     otp = f"{secrets.randbelow(1_000_000):06d}"
     salt, digest = _hash_secret(otp)
@@ -5549,6 +5555,8 @@ def _issue_otp(account):
         return False, "SMTP email delivery failed. Check the SMTP server configuration and try again."
 
     print("OTP SMTP_SEND_SUCCESS: email accepted by SMTP.")
+    st.session_state.pop("smtp_delivery_error", None)
+    st.session_state.pop("otp_state_error", None)
     account["otp_last_sent_at"] = now
     account["otp_delivery_status"] = True
     delivered_fields = {
