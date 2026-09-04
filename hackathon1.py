@@ -3188,10 +3188,22 @@ def material_marketplace():
             max_delivery = supplier_comparison["Fastest Delivery (days)"].max()
             
             # Calculate value score (higher is better)
+            # Safely normalize rating even when all ratings are equal
+            if max_rating == min_rating:
+                rating_score = 0.0
+            else:
+                rating_score = (
+                    (supplier_comparison["Rating"] - min_rating)
+                    / (max_rating - min_rating)
+                )
+
+            # Calculate value score (higher is better)
             supplier_comparison["Value Score"] = (
-                (supplier_comparison["Rating"] - min_rating) / (max_rating - min_rating) * 0.4 +  # 40% rating
-                (1 - (supplier_comparison["Avg Price (₹)"] - min_price) / (max_price - min_price + 1)) * 0.35 +  # 35% price (inverted)
-                (1 - (supplier_comparison["Fastest Delivery (days)"] - min_delivery) / (max_delivery - min_delivery + 1)) * 0.25  # 25% delivery (inverted)
+                rating_score * 0.4 +
+                (1 - (supplier_comparison["Avg Price (₹)"] - min_price) /
+                 (max_price - min_price + 1)) * 0.35 +
+                (1 - (supplier_comparison["Fastest Delivery (days)"] - min_delivery) /
+                 (max_delivery - min_delivery + 1)) * 0.25
             ) * 100
             
             supplier_comparison = supplier_comparison.sort_values("Value Score", ascending=False)
