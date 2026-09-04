@@ -152,7 +152,10 @@ def update_user(user_id: str, fields: Dict[str, Any]) -> Optional[Dict[str, Any]
     while compatible_fields:
         try:
             response = client.table("users").update(compatible_fields).eq("id", user_id).execute()
-            return _one(response)
+            updated_user = _one(response)
+            if updated_user is None:
+                raise DatabaseOperationError("Supabase users update did not affect the requested user.")
+            return updated_user
         except APIError as exc:
             _log_api_error(exc)
             code = getattr(exc, "code", None)
