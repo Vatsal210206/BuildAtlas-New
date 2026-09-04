@@ -1087,10 +1087,15 @@ def ocr_with_api(image_file):
         }
         
         # Step 1: Send preprocessed image to Azure Vision API
-        response = requests.post(url, headers=headers, data=image_bytes, timeout=30)
+        response = requests.post(
+            url,
+            headers=headers,
+            data=image_bytes,
+            timeout=30
+        )
         
         if response.status_code != 202:
-            error_msg = f"Azure API Error {response.status_code}: {response.text}"
+            error_msg = f"Azure API Error {response.status_code}: {response.text[:500]}"
             return {"success": False, "error": error_msg, "text": ""}
         
         # Step 2: Get the operation URL from response headers
@@ -1104,7 +1109,16 @@ def ocr_with_api(image_file):
         attempt = 0
         while attempt < max_attempts:
             result = requests.get(operation_url, headers={"Ocp-Apim-Subscription-Key": key}, timeout=10)
-            result_json = result.json()
+            if result.status_code != 200:
+                return {
+                    "success": False,
+                    "error": f"Azure API Error {result.status_code}: {result.text[:500]}",
+                    "text": ""
+                }
+            try:
+                result_json = result.json()
+            except ValueError as e:
+                return {"success": False, "error": f"Invalid Azure response JSON: {e}", "text": ""}
             
             status = result_json.get("status")
             
@@ -1139,8 +1153,8 @@ def ocr_with_api(image_file):
     
     except requests.exceptions.Timeout:
         return {"success": False, "error": "Request timeout: Azure service took too long", "text": ""}
-    except requests.exceptions.ConnectionError:
-        return {"success": False, "error": "Connection error: Cannot reach Azure Vision API", "text": ""}
+    except requests.exceptions.ConnectionError as e:
+        return {"success": False, "error": f"Connection error: {e}", "text": ""}
     except Exception as e:
         # FIX: Show full exception details for debugging
         error_details = f"{type(e).__name__}: {str(e)}"
@@ -2360,7 +2374,7 @@ def vastu_page():
         if uploaded_plan:
             image = Image.open(uploaded_plan)
     
-            st.image(image, caption="📐 Uploaded Floor Plan", use_column_width=True)
+            st.image(image, caption="📐 Uploaded Floor Plan", use_container_width=True)
     
             if st.button("🔍 Analyze Floor Plan", use_container_width=True):
     
@@ -2407,7 +2421,7 @@ def vastu_page():
                             st.info(s)
     
                     # Show processed edges (cool demo effect)
-                    st.image(edges, caption="🔍 Edge Detection (AI View)", use_column_width=True)
+                    st.image(edges, caption="🔍 Edge Detection (AI View)", use_container_width=True)
     
         st.markdown('</div>', unsafe_allow_html=True)
     with tab5:
@@ -3532,7 +3546,7 @@ def construction_progress_tracker():
         
         with image_col1:
             image = Image.open(uploaded_file)
-            st.image(image, caption="Uploaded Site Photo", use_column_width=True)
+            st.image(image, caption="Uploaded Site Photo", use_container_width=True)
         
         with image_col2:
             if st.button("🤖 Detect Construction Stage", use_container_width=True):
