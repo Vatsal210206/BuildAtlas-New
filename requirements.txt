@@ -10,3 +10,4 @@ joblib
 razorpay
 python-dotenv
 supabase
+scikit-learn
