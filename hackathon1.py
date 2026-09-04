@@ -1050,16 +1050,16 @@ def preprocess_image(image):
 
 def ocr_with_api(image_file):
     """
-    Extract bill text through Eden AI's OCR endpoint.
+    Extract bill text through OCR.space.
     """
     try:
         try:
-            api_key = str(st.secrets["EDEN_AI_API_KEY"]).strip()
+            api_key = str(st.secrets["OCR_SPACE_API_KEY"]).strip()
         except (KeyError, FileNotFoundError, RuntimeError):
-            return {"success": False, "error": "Missing EDEN_AI_API_KEY in Streamlit Secrets", "text": ""}
+            return {"success": False, "error": "Missing OCR_SPACE_API_KEY in Streamlit Secrets", "text": ""}
 
         if not api_key:
-            return {"success": False, "error": "Missing EDEN_AI_API_KEY in Streamlit Secrets", "text": ""}
+            return {"success": False, "error": "Missing OCR_SPACE_API_KEY in Streamlit Secrets", "text": ""}
 
         image_file.seek(0)
         
@@ -1071,46 +1071,56 @@ def ocr_with_api(image_file):
         img_byte_arr = io.BytesIO()
         preprocessed_image.save(img_byte_arr, format='PNG')
         image_bytes = img_byte_arr.getvalue()
-        headers = {"Authorization": f"Bearer {api_key}"}
 
         response = requests.post(
-            "https://api.edenai.run/v2/ocr/ocr/",
-            headers=headers,
+            "https://api.ocr.space/parse/image",
+            headers={"apikey": api_key},
             files={"file": ("bill.png", image_bytes, "image/png")},
-            data={"providers": "google", "language": "en"},
+            data={"language": "eng", "OCREngine": "2", "isTable": "true"},
             timeout=30
         )
         if not 200 <= response.status_code < 300:
-            auth_diagnostic = "EDEN_AI_API_KEY present, length " + str(len(api_key))
             return {
                 "success": False,
-                "error": f"Eden AI OCR error {response.status_code} ({auth_diagnostic}): {response.text[:500]}",
+                "error": f"OCR.space API error {response.status_code}: {response.text[:500]}",
                 "text": ""
             }
         try:
             result = response.json()
         except ValueError as e:
-            return {"success": False, "error": f"Invalid Eden AI OCR JSON: {e}", "text": ""}
+            return {"success": False, "error": f"Invalid OCR.space JSON: {e}", "text": ""}
 
         if not isinstance(result, dict):
-            return {"success": False, "error": "Unexpected Eden AI OCR JSON response", "text": ""}
+            return {"success": False, "error": "Unexpected OCR.space JSON response", "text": ""}
 
-        provider_result = result.get("google")
-        if not isinstance(provider_result, dict):
-            return {"success": False, "error": "Eden AI OCR response did not contain google provider data", "text": ""}
-        if provider_result.get("status") != "success":
-            provider_error = provider_result.get("error") or provider_result.get("message") or "Unknown provider error"
-            return {"success": False, "error": f"Eden AI OCR failed: {provider_error}", "text": ""}
+        if result.get("IsErroredOnProcessing"):
+            error_message = result.get("ErrorMessage") or result.get("ErrorDetails") or "Unknown OCR.space processing error"
+            return {"success": False, "error": f"OCR.space processing failed: {error_message}", "text": ""}
 
-        ocr_text = provider_result.get("text")
-        if not isinstance(ocr_text, str):
-            return {"success": False, "error": "Eden AI OCR response did not contain google.text", "text": ""}
+        parsed_results = result.get("ParsedResults")
+        if not isinstance(parsed_results, list):
+            return {"success": False, "error": "OCR.space response did not contain ParsedResults", "text": ""}
+
+        page_text = []
+        for parsed_result in parsed_results:
+            if not isinstance(parsed_result, dict):
+                continue
+            parsed_text = parsed_result.get("ParsedText")
+            if isinstance(parsed_text, str) and parsed_text.strip():
+                page_text.append(parsed_text.strip())
+            elif parsed_result.get("ErrorMessage") or parsed_result.get("ErrorDetails"):
+                page_error = parsed_result.get("ErrorMessage") or parsed_result.get("ErrorDetails")
+                return {"success": False, "error": f"OCR.space parsing failed: {page_error}", "text": ""}
+
+        ocr_text = "\n".join(page_text).strip()
+        if not ocr_text:
+            return {"success": False, "error": "OCR.space returned no extracted text", "text": ""}
         return {"success": True, "error": "", "text": ocr_text.strip()}
     
     except requests.exceptions.Timeout:
-        return {"success": False, "error": "Request timeout: Eden AI OCR service took too long", "text": ""}
+        return {"success": False, "error": "Request timeout: OCR.space service took too long", "text": ""}
     except requests.exceptions.ConnectionError as e:
-        return {"success": False, "error": f"Connection error contacting Eden AI OCR: {e}", "text": ""}
+        return {"success": False, "error": f"Connection error contacting OCR.space: {e}", "text": ""}
     except Exception as e:
         # FIX: Show full exception details for debugging
         error_details = f"{type(e).__name__}: {str(e)}"
