@@ -5465,6 +5465,33 @@ def _find_account(identifier):
     )
 
 
+def _otp_state_matches(account, expected):
+    if not isinstance(account, dict):
+        return False
+    if account.get("otp_salt") != expected.get("otp_salt") or account.get("otp_hash") != expected.get("otp_hash"):
+        return False
+    try:
+        actual_expiry = _database_timestamp(account.get("otp_expires_at"))
+        expected_expiry = _database_timestamp(expected.get("otp_expires_at"))
+        actual_sent = _database_timestamp(account.get("otp_last_sent_at"))
+        expected_sent = _database_timestamp(expected.get("otp_last_sent_at"))
+        actual_attempts = int(account.get("otp_attempts", -1))
+        expected_attempts = int(expected.get("otp_attempts", -2))
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return (
+        actual_expiry is not None
+        and expected_expiry is not None
+        and abs(actual_expiry - expected_expiry) < 2
+        and actual_sent is not None
+        and expected_sent is not None
+        and abs(actual_sent - expected_sent) < 2
+        and actual_attempts == expected_attempts
+        and bool(account.get("otp_invalidated")) == bool(expected.get("otp_invalidated"))
+        and bool(account.get("otp_delivery_status")) == bool(expected.get("otp_delivery_status"))
+    )
+
+
 def _issue_otp(account):
     now = time.time()
     st.session_state.pop("smtp_delivery_error", None)
@@ -5474,7 +5501,9 @@ def _issue_otp(account):
     except (TypeError, ValueError, OverflowError):
         last_sent_at = 0
     st.session_state["pending_verification"] = account.get("email", "")
-    st.session_state["pending_verification_account"] = dict(account)
+    st.session_state["pending_verification_account"] = (
+        dict(account) if not db.is_configured() else {"id": account.get("id"), "email": account.get("email", "")}
+    )
     cooldown_remaining = OTP_RESEND_COOLDOWN_SECONDS - (now - last_sent_at)
     if cooldown_remaining > 0:
         return False, f"A code was already sent. Please wait {max(1, int(cooldown_remaining))} seconds before requesting another OTP."
@@ -5503,6 +5532,9 @@ def _issue_otp(account):
     if db.is_configured():
         try:
             db.update_user(account["id"], pending_fields)
+            persisted_account = _find_account(account["email"])
+            if not _otp_state_matches(persisted_account, pending_fields):
+                raise db.DatabaseOperationError("OTP state could not be confirmed after persistence.")
         except (db.DatabaseConfigurationError, db.DatabaseOperationError):
             return False, "The OTP could not be prepared in the database. Please try again."
     else:
@@ -5533,7 +5565,9 @@ def _issue_otp(account):
                     persisted_account.update(clear_fields)
                     break
             _save_persisted_accounts(persisted_accounts)
-        st.session_state["pending_verification_account"] = dict(account)
+        st.session_state["pending_verification_account"] = (
+            dict(account) if not db.is_configured() else {"id": account.get("id"), "email": account.get("email", "")}
+        )
         return False, "SMTP email delivery failed. Check the SMTP server configuration and try again."
 
     st.session_state.pop("smtp_delivery_error", None)
@@ -5549,6 +5583,12 @@ def _issue_otp(account):
             db.update_user(account["id"], delivered_fields)
         except (db.DatabaseConfigurationError, db.DatabaseOperationError):
             st.session_state["otp_state_error"] = "OTP sent, but delivery status could not be saved. The code remains valid."
+        try:
+            persisted_account = _find_account(account["email"])
+            if not _otp_state_matches(persisted_account, {**pending_fields, **delivered_fields}):
+                st.session_state["otp_state_error"] = "OTP delivery status could not be confirmed. The code remains valid."
+        except (db.DatabaseConfigurationError, db.DatabaseOperationError):
+            st.session_state["otp_state_error"] = "OTP sent, but its state could not be confirmed. The code remains valid."
     else:
         persisted_accounts = _load_persisted_accounts()
         for persisted_account in persisted_accounts:
@@ -5556,7 +5596,9 @@ def _issue_otp(account):
                 persisted_account.update({"otp_last_sent_at": account["otp_last_sent_at"], "otp_delivery_status": True})
                 break
         _save_persisted_accounts(persisted_accounts)
-    st.session_state["pending_verification_account"] = dict(account)
+    st.session_state["pending_verification_account"] = (
+        dict(account) if not db.is_configured() else {"id": account.get("id"), "email": account.get("email", "")}
+    )
     return True, ""
 
 
@@ -5719,7 +5761,10 @@ def _render_otp_verification():
         and re.fullmatch(r"[0-9a-fA-F]{32}", otp_salt)
         and re.fullmatch(r"[0-9a-fA-F]{64}", otp_hash)
     )
-    if not otp_state_exists:
+    with st.form("otp_verification_form"):
+        otp = st.text_input("One-time password", max_chars=6, placeholder="6-digit OTP")
+        verify = st.form_submit_button("Verify OTP", type="primary", use_container_width=True)
+    if not otp_state_exists and not verify:
         status = get_smtp_configuration_status()
         missing = ", ".join(name for name, is_set in status.items() if not is_set)
         if missing and not account.get("otp_salt") and not account.get("otp_hash"):
@@ -5728,9 +5773,6 @@ def _render_otp_verification():
             st.error("SMTP email delivery failed. Please request a new OTP.")
         else:
             st.error("OTP is unavailable. Request a new OTP.")
-    with st.form("otp_verification_form"):
-        otp = st.text_input("One-time password", max_chars=6, placeholder="6-digit OTP")
-        verify = st.form_submit_button("Verify OTP", type="primary", use_container_width=True)
     if verify:
         otp_clean = otp.strip()
         if not otp_state_exists:
