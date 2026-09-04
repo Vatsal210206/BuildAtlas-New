@@ -1078,10 +1078,9 @@ def ocr_with_api(image_file):
         import os
         
         # Azure Vision API configuration
-        endpoint = "https://atsu.cognitiveservices.azure.com/" 
-        key = "3CfPtuGTsQUHH7Z8PsMBmJcCKv6OPLRErkbiDixAnKRqxudBPmEyJQQJ99CDACYeBjFXJ3w3AAAEACOGjSiZ"
-        url = endpoint + "vision/v3.2/read/analyze"
-        
+        endpoint = st.secrets["AZURE_VISION_ENDPOINT"].rstrip("/")
+        key = st.secrets["AZURE_VISION_KEY"]
+        url = endpoint + "/vision/v3.2/read/analyze"
         headers = {
             "Ocp-Apim-Subscription-Key": key,
             "Content-Type": "application/octet-stream"
@@ -1571,7 +1570,7 @@ def bill_scanner():
 
         if uploaded_file:
             image = Image.open(uploaded_file)
-            st.image(image, caption="📸 Bill Preview", use_container_width=True)
+            st.image(image, caption="📸 Bill Preview", use_co_width=True)
 
             if st.button("🔍 Scan Bill with OCR", type="primary", use_container_width=True):
                 with st.spinner("🔄 OCR processing..."):
