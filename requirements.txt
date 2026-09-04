@@ -11,3 +11,4 @@ razorpay
 python-dotenv
 supabase
 scikit-learn
+xgboost
