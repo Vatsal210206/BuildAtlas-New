@@ -2767,7 +2767,7 @@ def material_marketplace():
     
     st.markdown('<h1 class="main-header">🧱 Material Marketplace</h1>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">Premium construction materials from trusted suppliers</p>', unsafe_allow_html=True)
-
+    
     # Try to load real products from Supabase first
     df_materials = None
     if db.is_configured():
@@ -2794,11 +2794,11 @@ def material_marketplace():
         except Exception as e:
             print(f"Error loading products from Supabase: {e}")
             df_materials = None
-
+    
     # Fall back to dummy products if no real products available
     if df_materials is None or df_materials.empty:
         df_materials = get_materials_database()
-
+    
     st.markdown('<div class="ba-divider"></div>', unsafe_allow_html=True)
     
     st.markdown("### 🔍 Filter & Search", help="Find materials by category, price, rating")
@@ -2812,8 +2812,20 @@ def material_marketplace():
         selected_category = st.selectbox("Category", ["All"] + sorted(df_materials["category"].unique().tolist()), label_visibility="collapsed")
     
     with filter_cols[2]:
-        price_range = st.slider("Price Range (₹)", int(df_materials["price"].min()), int(df_materials["price"].max()), (int(df_materials["price"].min()), int(df_materials["price"].max())), label_visibility="collapsed")
-    
+     min_price = int(df_materials["price"].min())
+     max_price = int(df_materials["price"].max())
+
+    if min_price == max_price:
+        price_range = (min_price, max_price)
+        st.caption(f"Price: ₹{min_price:,}")
+    else:
+        price_range = st.slider(
+            "Price Range (₹)",
+            min_price,
+            max_price,
+            (min_price, max_price),
+            label_visibility="collapsed"
+        )
     with filter_cols[3]:
         sort_by = st.selectbox("Sort By", ["Lowest Price", "Highest Rating", "Fastest Delivery"], label_visibility="collapsed")
     
