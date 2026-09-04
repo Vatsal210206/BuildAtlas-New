@@ -1570,7 +1570,7 @@ def bill_scanner():
 
         if uploaded_file:
             image = Image.open(uploaded_file)
-            st.image(image, caption="📸 Bill Preview", use_co_width=True)
+            st.image(image, caption="📸 Bill Preview", use_container_width=True)
 
             if st.button("🔍 Scan Bill with OCR", type="primary", use_container_width=True):
                 with st.spinner("🔄 OCR processing..."):
