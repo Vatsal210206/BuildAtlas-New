@@ -1769,7 +1769,8 @@ def chatbot():
         st.session_state.chat_history = []
 
     # Chat display
-    st.markdown('<div class="ba-card" style="min-height:300px;max-height:500px;overflow-y:auto;">', unsafe_allow_html=True)
+    chat_min_height = "min-height:300px;" if st.session_state.chat_history else ""
+    st.markdown(f'<div class="ba-card" style="{chat_min_height}max-height:500px;overflow-y:auto;">', unsafe_allow_html=True)
     if not st.session_state.chat_history:
         st.markdown("""
         <div style="text-align:center;padding:40px;color:#5a7090;">
