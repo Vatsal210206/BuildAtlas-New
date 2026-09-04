@@ -1050,21 +1050,17 @@ def preprocess_image(image):
 
 def ocr_with_api(image_file):
     """
-    FIX: Azure Vision API with detailed exception handling
-    
-    CHANGES MADE:
-    1. Uses try-except with st.exception() to show actual errors
-    2. Validates all API responses properly
-    3. Preprocesses image before sending to Azure
-    4. Returns both success/failure AND raw text
-    5. Provides clear error messages for debugging
-    
-    WHY THIS WORKS:
-    - Azure Vision API requires proper image preprocessing
-    - Detailed errors help identify auth issues, image size problems, etc.
-    - Preprocessing increases OCR accuracy by 20-30%
+    Extract bill text through Eden AI's V3 OCR endpoint.
     """
     try:
+        try:
+            api_key = st.secrets["EDEN_AI_API_KEY"]
+        except (KeyError, FileNotFoundError, RuntimeError):
+            return {"success": False, "error": "Missing EDEN_AI_API_KEY in Streamlit Secrets", "text": ""}
+
+        if not str(api_key).strip():
+            return {"success": False, "error": "Missing EDEN_AI_API_KEY in Streamlit Secrets", "text": ""}
+
         image_file.seek(0)
         
         # Load and preprocess image BEFORE sending to API
@@ -1075,86 +1071,70 @@ def ocr_with_api(image_file):
         img_byte_arr = io.BytesIO()
         preprocessed_image.save(img_byte_arr, format='PNG')
         image_bytes = img_byte_arr.getvalue()
-        import os
-        
-        # Azure Vision API configuration
-        endpoint = st.secrets["AZURE_VISION_ENDPOINT"].rstrip("/")
-        key = st.secrets["AZURE_VISION_KEY"]
-        url = endpoint + "/vision/v3.2/read/analyze"
-        headers = {
-            "Ocp-Apim-Subscription-Key": key,
-            "Content-Type": "application/octet-stream"
-        }
-        
-        # Step 1: Send preprocessed image to Azure Vision API
-        response = requests.post(
-            url,
+        headers = {"Authorization": f"Bearer {api_key}"}
+
+        # Eden AI V3 first stores the uploaded bytes and returns a file_id.
+        upload_response = requests.post(
+            "https://api.edenai.run/v3/upload",
             headers=headers,
-            data=image_bytes,
+            files={"file": ("bill.png", image_bytes, "image/png")},
+            data={"purpose": "ocr"},
             timeout=30
         )
-        
-        if response.status_code != 202:
-            error_msg = f"Azure API Error {response.status_code}: {response.text[:500]}"
-            return {"success": False, "error": error_msg, "text": ""}
-        
-        # Step 2: Get the operation URL from response headers
-        if "Operation-Location" not in response.headers:
-            return {"success": False, "error": "No Operation-Location in response", "text": ""}
-        
-        operation_url = response.headers["Operation-Location"]
-        
-        # Step 3: Poll Azure for results (max 60 seconds)
-        max_attempts = 60
-        attempt = 0
-        while attempt < max_attempts:
-            result = requests.get(operation_url, headers={"Ocp-Apim-Subscription-Key": key}, timeout=10)
-            if result.status_code != 200:
-                return {
-                    "success": False,
-                    "error": f"Azure API Error {result.status_code}: {result.text[:500]}",
-                    "text": ""
-                }
-            try:
-                result_json = result.json()
-            except ValueError as e:
-                return {"success": False, "error": f"Invalid Azure response JSON: {e}", "text": ""}
-            
-            status = result_json.get("status")
-            
-            if status == "succeeded":
-                # Extract text from all pages
-                ocr_text = ""
-                if "analyzeResult" in result_json and "readResults" in result_json["analyzeResult"]:
-                    for page in result_json["analyzeResult"]["readResults"]:
-                        if "lines" in page:
-                            for line in page["lines"]:
-                                ocr_text += line.get("text", "") + "\n"
-                
-                # Ensure ocr_text is a string, never a list
-                if not isinstance(ocr_text, str):
-                    ocr_text = str(ocr_text)
-                
-                return {"success": True, "error": "", "text": ocr_text.strip()}
-            
-            elif status == "failed":
-                failure_reason = result_json.get("analyzeResult", {}).get("error", {}).get("message", "Unknown reason")
-                return {"success": False, "error": f"Azure OCR Failed: {failure_reason}", "text": ""}
-            
-            elif status in ["notStarted", "running"]:
-                # Still processing, wait and retry
-                time.sleep(1)
-                attempt += 1
-            else:
-                return {"success": False, "error": f"Unknown status: {status}", "text": ""}
-        
-        # Timeout after 60 seconds
-        return {"success": False, "error": "OCR processing timeout (>60 seconds)", "text": ""}
+        if not 200 <= upload_response.status_code < 300:
+            return {
+                "success": False,
+                "error": f"Eden AI upload error {upload_response.status_code}: {upload_response.text[:500]}",
+                "text": ""
+            }
+        try:
+            upload_json = upload_response.json()
+        except ValueError as e:
+            return {"success": False, "error": f"Invalid Eden AI upload JSON: {e}", "text": ""}
+
+        file_id = upload_json.get("file_id")
+        if not file_id:
+            return {"success": False, "error": "Eden AI upload response did not contain file_id", "text": ""}
+
+        ocr_response = requests.post(
+            "https://api.edenai.run/v3/universal-ai",
+            headers={**headers, "Content-Type": "application/json"},
+            json={
+                "model": "ocr/ocr/google",
+                "input": {"file": file_id, "language": "en"}
+            },
+            timeout=30
+        )
+        if not 200 <= ocr_response.status_code < 300:
+            return {
+                "success": False,
+                "error": f"Eden AI OCR error {ocr_response.status_code}: {ocr_response.text[:500]}",
+                "text": ""
+            }
+        try:
+            ocr_json = ocr_response.json()
+        except ValueError as e:
+            return {"success": False, "error": f"Invalid Eden AI OCR JSON: {e}", "text": ""}
+
+        if not isinstance(ocr_json, dict):
+            return {"success": False, "error": "Unexpected Eden AI OCR JSON response", "text": ""}
+        if ocr_json.get("status") != "success":
+            output = ocr_json.get("output") if isinstance(ocr_json.get("output"), dict) else {}
+            provider_error = ocr_json.get("error") or ocr_json.get("message") or output.get("error")
+            return {"success": False, "error": f"Eden AI OCR failed: {provider_error or 'Unknown provider error'}", "text": ""}
+
+        output = ocr_json.get("output")
+        if not isinstance(output, dict):
+            return {"success": False, "error": "Eden AI OCR response did not contain output.text", "text": ""}
+        ocr_text = output.get("text")
+        if not isinstance(ocr_text, str):
+            return {"success": False, "error": "Eden AI OCR response did not contain output.text", "text": ""}
+        return {"success": True, "error": "", "text": ocr_text.strip()}
     
     except requests.exceptions.Timeout:
-        return {"success": False, "error": "Request timeout: Azure service took too long", "text": ""}
+        return {"success": False, "error": "Request timeout: Eden AI OCR service took too long", "text": ""}
     except requests.exceptions.ConnectionError as e:
-        return {"success": False, "error": f"Connection error: {e}", "text": ""}
+        return {"success": False, "error": f"Connection error contacting Eden AI OCR: {e}", "text": ""}
     except Exception as e:
         # FIX: Show full exception details for debugging
         error_details = f"{type(e).__name__}: {str(e)}"
