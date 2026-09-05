@@ -1,3 +1,17 @@
+-- Ensure the base Builder profile exists before extending it. This keeps the
+-- migration safe when the base schema was not applied in the target project.
+CREATE TABLE IF NOT EXISTS public.builder_profiles (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid NOT NULL UNIQUE REFERENCES public.users(id) ON DELETE CASCADE,
+    business_name text NOT NULL,
+    contact_name text NOT NULL,
+    phone text NOT NULL,
+    address text DEFAULT '',
+    city text DEFAULT '',
+    state text DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
 ALTER TABLE public.builder_profiles
     ADD COLUMN IF NOT EXISTS gst_number text DEFAULT '',
     ADD COLUMN IF NOT EXISTS portfolio_summary text DEFAULT '',
