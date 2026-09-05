@@ -274,6 +274,38 @@ def vendor_orders(vendor_id: str) -> List[Dict[str, Any]]:
     return _rows(connect().table("orders").select("*").eq("vendor_id", vendor_id).order("created_at", desc=True).execute())
 
 
+def vendor_order_unlock(vendor_id: str, order_id: str) -> Optional[Dict[str, Any]]:
+    return _one(
+        connect().table("vendor_order_unlocks").select("*")
+        .eq("vendor_id", vendor_id).eq("order_id", order_id).limit(1).execute()
+    )
+
+
+def create_vendor_order_unlock(data: Dict[str, Any]) -> Dict[str, Any]:
+    return _one(connect().table("vendor_order_unlocks").insert(data).execute()) or {}
+
+
+def update_vendor_order_unlock(vendor_id: str, order_id: str, fields: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    return _one(
+        connect().table("vendor_order_unlocks")
+        .update({**fields, "updated_at": _now()})
+        .eq("vendor_id", vendor_id).eq("order_id", order_id).execute()
+    )
+
+
+def customer_contact(user_id: str) -> Optional[Dict[str, Any]]:
+    user = _one(connect().table("users").select("id,email,phone,role").eq("id", user_id).limit(1).execute())
+    if not user or user.get("role") != "CUSTOMER":
+        return None
+    profile = _one(connect().table("customer_profiles").select("full_name,phone").eq("user_id", user_id).limit(1).execute()) or {}
+    return {
+        "id": user["id"],
+        "name": profile.get("full_name", "Customer"),
+        "phone": profile.get("phone") or user.get("phone", ""),
+        "email": user.get("email", ""),
+    }
+
+
 def create_order(data: Dict[str, Any]) -> Dict[str, Any]:
     return _one(connect().table("orders").insert(data).execute()) or {}
 

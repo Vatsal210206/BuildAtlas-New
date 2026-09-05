@@ -57,6 +57,14 @@ create table if not exists quotations (
 create table if not exists orders (
     id uuid primary key default gen_random_uuid(), quotation_id uuid not null unique references quotations(id) on delete restrict, buyer_id uuid not null references users(id) on delete cascade, vendor_id uuid not null references users(id) on delete cascade, total_amount numeric(14,2) not null check (total_amount >= 0), delivery_location text default '', status text not null default 'New' check (status in ('New','Confirmed','Processing','Ready for Dispatch','Dispatched','Delivered','Cancelled')), created_at timestamptz not null default now(), updated_at timestamptz not null default now()
 );
+create table if not exists vendor_order_unlocks (
+    id uuid primary key default gen_random_uuid(), order_id uuid not null references orders(id) on delete cascade,
+    vendor_id uuid not null references users(id) on delete cascade, fee_amount_paise integer not null check (fee_amount_paise = 4900),
+    currency text not null default 'INR' check (currency = 'INR'), razorpay_order_id text not null unique,
+    razorpay_payment_id text unique, payment_status text not null default 'created' check (payment_status in ('created','paid','failed')),
+    unlocked boolean not null default false, payment_timestamp timestamptz, created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
+    unique(vendor_id, order_id)
+);
 create table if not exists deliveries (
     id uuid primary key default gen_random_uuid(), order_id uuid not null unique references orders(id) on delete cascade, status text not null default 'Not Scheduled' check (status in ('Not Scheduled','Scheduled','Dispatched','Delivered')), dispatch_date date, expected_delivery_date date, vehicle_number text default '', driver_name text default '', created_at timestamptz not null default now(), updated_at timestamptz not null default now()
 );
@@ -74,6 +82,7 @@ create index if not exists enquiries_vendor_id_idx on enquiries(vendor_id);
 create index if not exists enquiries_buyer_id_idx on enquiries(buyer_id);
 create index if not exists quotations_vendor_id_idx on quotations(vendor_id);
 create index if not exists orders_vendor_id_idx on orders(vendor_id);
+create index if not exists vendor_order_unlocks_vendor_order_idx on vendor_order_unlocks(vendor_id, order_id);
 create index if not exists users_role_idx on users(role);
 create index if not exists project_quote_requests_customer_idx on project_quote_requests ((payload->>'customer_id'));
 create index if not exists project_quote_requests_builder_idx on project_quote_requests ((payload->>'builder_id'));

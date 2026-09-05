@@ -4006,6 +4006,7 @@ def _current_builder_ids():
 
 
 RAZORPAY_AMOUNT_PAISE = 50000
+VENDOR_ORDER_UNLOCK_AMOUNT_PAISE = 4900
 
 
 def _razorpay_client():
@@ -4120,6 +4121,143 @@ def _razorpay_checkout(order):
         "handler": True,
     })
     order_id = json.dumps(order["id"])
+    return f"""
+    <script src=\"https://checkout.razorpay.com/v1/checkout.js\"></script>
+    <script>
+      const config = {checkout_config};
+      config.handler = function (response) {{
+        const params = new URLSearchParams(window.parent.location.search);
+        params.set('razorpay_payment_id', response.razorpay_payment_id);
+        params.set('razorpay_order_id', response.razorpay_order_id);
+        params.set('razorpay_signature', response.razorpay_signature);
+        window.parent.location.href = window.parent.location.pathname + '?' + params.toString();
+      }};
+      config.modal = {{ ondismiss: function () {{ window.parent.location.reload(); }} }};
+      new Razorpay(config).open();
+    </script>
+    """
+
+
+def _create_vendor_unlock_order(account, order):
+    vendor_id = account.get("id")
+    order_id = order.get("id")
+    if not vendor_id or not order_id or not db.is_configured():
+        return None, "Vendor order unlocking requires an authenticated vendor and configured database."
+
+    try:
+        owned_order = next((item for item in db.vendor_orders(vendor_id) if str(item.get("id")) == str(order_id)), None)
+        existing = db.vendor_order_unlock(vendor_id, order_id)
+    except Exception:
+        return None, "The order unlock service is temporarily unavailable. Please try again."
+    if not owned_order:
+        return None, "You are not authorized to unlock this order."
+    if existing and existing.get("unlocked") and existing.get("payment_status") == "paid":
+        return existing, None
+    if existing and existing.get("payment_status") == "created" and existing.get("razorpay_order_id"):
+        return existing, None
+
+    client, error = _razorpay_client()
+    if error:
+        return None, error
+    try:
+        razorpay_order = client.order.create({
+            "amount": VENDOR_ORDER_UNLOCK_AMOUNT_PAISE,
+            "currency": "INR",
+            "receipt": f"ba_unlock_{str(order_id).replace('-', '')[:24]}",
+            "notes": {"purpose": "BuildAtlas vendor customer lead unlock", "order_id": str(order_id)},
+        })
+        unlock_data = {
+            "order_id": order_id,
+            "vendor_id": vendor_id,
+            "fee_amount_paise": VENDOR_ORDER_UNLOCK_AMOUNT_PAISE,
+            "currency": "INR",
+            "razorpay_order_id": razorpay_order["id"],
+            "payment_status": "created",
+            "unlocked": False,
+        }
+        if existing:
+            return db.update_vendor_order_unlock(vendor_id, order_id, unlock_data), None
+        return db.create_vendor_order_unlock(unlock_data), None
+    except Exception:
+        return None, "Unable to create the ₹49 Razorpay payment. Please try again."
+
+
+def _verify_vendor_unlock_callback(account):
+    payment_id = st.query_params.get("razorpay_payment_id")
+    razorpay_order_id = st.query_params.get("razorpay_order_id")
+    signature = st.query_params.get("razorpay_signature")
+    if not all((payment_id, razorpay_order_id, signature)):
+        return None
+
+    vendor_id = account.get("id")
+    pending = st.session_state.get("vendor_unlock_pending_order", {})
+    if not vendor_id or pending.get("vendor_id") != vendor_id or pending.get("razorpay_order_id") != razorpay_order_id:
+        st.error("Payment verification failed. The payment does not match this vendor session.")
+        st.query_params.clear()
+        return False
+
+    try:
+        unlock = db.vendor_order_unlock(vendor_id, pending.get("order_id"))
+        owned_order = next(
+            (item for item in db.vendor_orders(vendor_id) if str(item.get("id")) == str(pending.get("order_id"))),
+            None,
+        )
+        if not unlock or not owned_order or unlock.get("razorpay_order_id") != razorpay_order_id:
+            raise ValueError("Unlock record or order ownership did not match")
+        if unlock.get("unlocked") and unlock.get("payment_status") == "paid":
+            st.session_state.pop("vendor_unlock_pending_order", None)
+            st.query_params.clear()
+            return True
+
+        client, error = _razorpay_client()
+        if error:
+            raise ValueError(error)
+        client.utility.verify_payment_signature({
+            "razorpay_order_id": razorpay_order_id,
+            "razorpay_payment_id": payment_id,
+            "razorpay_signature": signature,
+        })
+        razorpay_order = client.order.fetch(razorpay_order_id)
+        payment = client.payment.fetch(payment_id)
+        if (
+            razorpay_order.get("id") != razorpay_order_id
+            or razorpay_order.get("amount") != VENDOR_ORDER_UNLOCK_AMOUNT_PAISE
+            or razorpay_order.get("currency") != "INR"
+            or payment.get("order_id") != razorpay_order_id
+            or payment.get("amount") != VENDOR_ORDER_UNLOCK_AMOUNT_PAISE
+            or payment.get("currency") != "INR"
+            or payment.get("status") not in {"authorized", "captured"}
+        ):
+            raise ValueError("Payment details did not match the vendor unlock fee")
+        payment_timestamp = payment.get("created_at")
+        updated_unlock = db.update_vendor_order_unlock(vendor_id, pending["order_id"], {
+            "razorpay_payment_id": payment_id,
+            "payment_status": "paid",
+            "unlocked": True,
+            "payment_timestamp": datetime.fromtimestamp(payment_timestamp, timezone.utc).isoformat() if payment_timestamp else datetime.now(timezone.utc).isoformat(),
+        })
+        if not updated_unlock:
+            raise ValueError("Verified payment could not be persisted")
+    except Exception:
+        st.error("Payment verification failed. Customer details remain locked.")
+        st.query_params.clear()
+        return False
+
+    st.session_state.pop("vendor_unlock_pending_order", None)
+    st.query_params.clear()
+    return True
+
+
+def _vendor_razorpay_checkout(order):
+    key_id = os.getenv("RAZORPAY_KEY_ID", "").strip()
+    checkout_config = json.dumps({
+        "key": key_id,
+        "amount": VENDOR_ORDER_UNLOCK_AMOUNT_PAISE,
+        "currency": "INR",
+        "name": "BuildAtlas",
+        "description": "Unlock customer details for this order",
+        "order_id": order["id"],
+    })
     return f"""
     <script src=\"https://checkout.razorpay.com/v1/checkout.js\"></script>
     <script>
@@ -5032,13 +5170,13 @@ def _dealer_state():
         quotes = []
         for quote in db.vendor_quotations(vendor_id):
             enquiry = next((item for item in enquiries if item["id"] == quote.get("enquiry_id")), {})
-            quotes.append({"id": quote["id"], "enquiry_id": quote["enquiry_id"], "buyer_id": quote["buyer_id"], "buyer": enquiry.get("buyer", quote["buyer_id"]), "item": enquiry.get("item", "Product"), "product_id": quote["product_id"], "quantity": quote["quantity"], "unit_price": float(quote["unit_price"]), "delivery_charge": float(quote["delivery_charge"]), "total": float(quote["total_amount"]), "delivery_days": int(quote["estimated_delivery"]), "status": quote.get("status", "Draft"), "date": str(quote.get("created_at", ""))[:10]})
+            quotes.append({"id": quote["id"], "enquiry_id": quote["enquiry_id"], "buyer_id": quote["buyer_id"], "buyer": enquiry.get("buyer", quote["buyer_id"]), "item": enquiry.get("item", "Product"), "unit": enquiry.get("unit", "units"), "product_id": quote["product_id"], "quantity": quote["quantity"], "unit_price": float(quote["unit_price"]), "delivery_charge": float(quote["delivery_charge"]), "total": float(quote["total_amount"]), "delivery_days": int(quote["estimated_delivery"]), "status": quote.get("status", "Draft"), "date": str(quote.get("created_at", ""))[:10]})
         orders = []
         deliveries = db.vendor_deliveries(vendor_id)
         for order in db.vendor_orders(vendor_id):
             quote = next((item for item in quotes if item["id"] == order.get("quotation_id")), {})
             delivery = next((item for item in deliveries if item.get("order_id") == order["id"]), {})
-            orders.append({"id": order["id"], "quote_id": order["quotation_id"], "buyer": quote.get("buyer", order["buyer_id"]), "item": quote.get("item", "Product"), "quantity": quote.get("quantity", 0), "total": float(order["total_amount"]), "order_date": str(order.get("created_at", ""))[:10], "location": order.get("delivery_location", ""), "status": order.get("status", "New"), "delivery_status": delivery.get("status", "Not Scheduled"), "dispatch_date": str(delivery.get("dispatch_date", "")), "expected_date": str(delivery.get("expected_delivery_date", ""))})
+            orders.append({"id": order["id"], "quote_id": order["quotation_id"], "buyer_id": order["buyer_id"], "buyer": "Customer", "item": quote.get("item", "Product"), "unit": quote.get("unit", "units"), "quantity": quote.get("quantity", 0), "total": float(order["total_amount"]), "order_date": str(order.get("created_at", ""))[:10], "location": order.get("delivery_location", ""), "status": order.get("status", "New"), "delivery_status": delivery.get("status", "Not Scheduled"), "dispatch_date": str(delivery.get("dispatch_date", "")), "expected_date": str(delivery.get("expected_delivery_date", ""))})
         state = {"dealer_products": products, "dealer_enquiries": enquiries, "dealer_quotes": quotes, "dealer_orders": orders, "dealer_activity": []}
         st.session_state["dealer_db_state"] = state
         return state
@@ -5255,6 +5393,11 @@ def dealer_quotations():
 
 
 def dealer_orders():
+    account = _current_account()
+    if not account or account.get("role") != ROLE_VENDOR:
+        st.error("Please log in as an authenticated vendor to view orders.")
+        return
+    verification_result = _verify_vendor_unlock_callback(account)
     state = _dealer_state()
     st.markdown('<h1 class="main-header">🧾 Orders</h1>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">Orders created after customers accept your quotations</p>', unsafe_allow_html=True)
@@ -5263,6 +5406,49 @@ def dealer_orders():
         return
     st.dataframe(pd.DataFrame(state["dealer_orders"])[["id", "buyer", "item", "quantity", "total", "order_date", "location", "status"]].rename(columns={"id": "Order ID", "buyer": "Customer / Builder", "item": "Items", "quantity": "Quantity", "total": "Order value (₹)", "order_date": "Order date", "location": "Delivery location", "status": "Status"}), use_container_width=True, hide_index=True)
     for order in state["dealer_orders"]:
+        try:
+            unlock = db.vendor_order_unlock(account["id"], order["id"]) if db.is_configured() else None
+        except Exception:
+            unlock = None
+            st.warning("Unlock status is temporarily unavailable. Please refresh and try again.")
+        unlocked = bool(unlock and unlock.get("unlocked") and unlock.get("payment_status") == "paid")
+        st.markdown(f"### ORDER #{order['id']}")
+        st.write(f"Material: {order['item']}")
+        st.write(f"Quantity: {order['quantity']} {order.get('unit', 'units')}")
+        st.write(f"Order value: ₹{order['total']:,.2f}")
+        st.write(f"Project location: {order['location'] or 'Not provided'}")
+        st.write(f"Order date: {order['order_date'] or 'Not available'}")
+        st.write(f"Current fulfilment status: {order['status']}")
+        if unlocked:
+            try:
+                contact = db.customer_contact(order["buyer_id"])
+            except Exception:
+                contact = None
+            if contact:
+                st.success("Customer Details Unlocked")
+                st.write(f"Customer: {contact['name']}")
+                st.write(f"Phone: {contact['phone']}")
+                st.write(f"Email: {contact['email']}")
+            else:
+                st.warning("Payment was verified, but the customer record is unavailable.")
+        else:
+            st.info("🔒 Customer contact details locked")
+            pending = st.session_state.get("vendor_unlock_pending_order", {})
+            if pending.get("vendor_id") == account["id"] and pending.get("order_id") == order["id"]:
+                components.html(_vendor_razorpay_checkout({"id": pending["razorpay_order_id"]}), height=80, scrolling=False)
+            elif st.button("💳 Pay ₹49 & Unlock Customer Details", key=f"vendor_unlock_{order['id']}", type="primary"):
+                unlock_record, error = _create_vendor_unlock_order(account, order)
+                if error:
+                    st.error(error)
+                elif unlock_record and unlock_record.get("unlocked"):
+                    st.rerun()
+                else:
+                    st.session_state["vendor_unlock_pending_order"] = {
+                        "vendor_id": account["id"],
+                        "order_id": order["id"],
+                        "razorpay_order_id": unlock_record.get("razorpay_order_id"),
+                    }
+                    st.rerun()
         status = st.selectbox(f"{order['id']} fulfilment status", DEALER_ORDER_STATUSES, index=DEALER_ORDER_STATUSES.index(order["status"]), key=f"dealer_order_status_{order['id']}")
         if st.button("Update Order Status", key=f"dealer_order_update_{order['id']}"):
             if db.is_configured():
