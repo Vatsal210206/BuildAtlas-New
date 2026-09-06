@@ -4757,7 +4757,7 @@ def builder_dashboard():
         st.markdown(
             f'<div class="ba-card"><div class="ba-card-title">✓ SUBSCRIPTION ACTIVE</div>'
             f'<div style="color:#dde8f5;font-size:14px;line-height:1.9;">Builder Pro<br>'
-            f'₹{subscription.get("amount", 500):,.0f} / month<br>'
+            '₹999 / month<br>'
             f'Next billing: {subscription.get("next_billing_date", "") }<br>'
             f'Payment ID: {subscription.get("razorpay_payment_id", "")[-8:]}</div></div>',
             unsafe_allow_html=True,
@@ -4766,7 +4766,7 @@ def builder_dashboard():
         st.markdown(
             '<div class="ba-card"><div class="ba-card-title">BUILDER PRO</div>'
             '<div style="color:#dde8f5;font-size:14px;line-height:1.9;">'
-            '₹500 / month<br>Unlock your full BuildAtlas builder presence</div></div>',
+            '₹999 / month<br>Unlock your full BuildAtlas builder presence</div></div>',
             unsafe_allow_html=True,
         )
         if st.button("Subscribe Now", key="builder_subscribe_now", type="primary", use_container_width=True):
