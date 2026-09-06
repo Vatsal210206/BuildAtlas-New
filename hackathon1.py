@@ -4764,7 +4764,7 @@ def builder_dashboard():
         )
     else:
         st.markdown(
-            '<div class="ba-card"><div class="ba-card-title">BUILDER PRO</div>'
+            '<div class="ba-card"><div class="ba-card-title">BUILDER MEMBERSHIP</div>'
             '<div style="color:#dde8f5;font-size:14px;line-height:1.9;">'
             '₹999 / month<br>Unlock your full BuildAtlas builder presence</div></div>',
             unsafe_allow_html=True,
@@ -6436,6 +6436,7 @@ ROLE_PAGE_CONFIG = {
         ("👤  Profile", "👤", customer_profile),
     ),
     "BUILDER / CONTRACTOR": (
+        ("👤  Profile", "👤", builder_profile),
         ("🏗️  Builder Dashboard", "🏗️", builder_dashboard),
         ("🏗️  Projects", "🏗️", builder_projects),
         ("👥  Customer Leads", "👥", builder_leads),
@@ -6447,7 +6448,6 @@ ROLE_PAGE_CONFIG = {
         ("👷  Labour Manager", "👷", labour),
         ("📁  Documents", "📁", builder_documents),
         ("⭐  Reviews", "⭐", builder_reviews),
-        ("👤  Profile", "👤", builder_profile),
     ),
     "DEALER / SUPPLIER": (
         ("📦  Vendor Dashboard", "📦", dealer_dashboard),
