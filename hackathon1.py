@@ -5893,6 +5893,19 @@ def _otp_state_matches(account, expected):
     )
 
 
+def _set_pending_verification(account):
+    email = str(account.get("email", "")).strip().lower()
+    user_id = account.get("id") or account.get("db_user_id")
+    if not email or (db.is_configured() and not user_id):
+        raise db.DatabaseOperationError("The account identity could not be saved for OTP verification.")
+    st.session_state["pending_verification"] = email
+    st.session_state["pending_verification_account"] = (
+        {"id": user_id, "email": email}
+        if db.is_configured()
+        else dict(account)
+    )
+
+
 def _issue_otp(account):
     now = time.time()
     st.session_state.pop("smtp_delivery_error", None)
@@ -5901,10 +5914,7 @@ def _issue_otp(account):
         last_sent_at = _database_timestamp(account.get("otp_last_sent_at")) or 0
     except (TypeError, ValueError, OverflowError):
         last_sent_at = 0
-    st.session_state["pending_verification"] = account.get("email", "")
-    st.session_state["pending_verification_account"] = (
-        dict(account) if not db.is_configured() else {"id": account.get("id"), "email": account.get("email", "")}
-    )
+    _set_pending_verification(account)
     cooldown_remaining = OTP_RESEND_COOLDOWN_SECONDS - (now - last_sent_at)
     if cooldown_remaining > 0:
         return False, f"A code was already sent. Please wait {max(1, int(cooldown_remaining))} seconds before requesting another OTP."
@@ -5966,9 +5976,7 @@ def _issue_otp(account):
                     persisted_account.update(clear_fields)
                     break
             _save_persisted_accounts(persisted_accounts)
-        st.session_state["pending_verification_account"] = (
-            dict(account) if not db.is_configured() else {"id": account.get("id"), "email": account.get("email", "")}
-        )
+        _set_pending_verification(account)
         return False, "SMTP email delivery failed. Check the SMTP server configuration and try again."
 
     st.session_state.pop("smtp_delivery_error", None)
@@ -5997,9 +6005,7 @@ def _issue_otp(account):
                 persisted_account.update({"otp_last_sent_at": account["otp_last_sent_at"], "otp_delivery_status": True})
                 break
         _save_persisted_accounts(persisted_accounts)
-    st.session_state["pending_verification_account"] = (
-        dict(account) if not db.is_configured() else {"id": account.get("id"), "email": account.get("email", "")}
-    )
+    _set_pending_verification(account)
     return True, ""
 
 
@@ -6134,9 +6140,14 @@ def _render_otp_verification():
     email = st.session_state.get("pending_verification")
     pending_account = st.session_state.get("pending_verification_account")
     account = None
-    if db.is_configured() and email:
+    if db.is_configured() and isinstance(pending_account, dict):
         try:
-            account = _find_account(email)
+            account = db.get_user_by_id(pending_account.get("id")) if pending_account.get("id") else None
+            if account:
+                account["profile"] = db.get_profile(account)
+                account["db_user_id"] = account.get("id")
+            elif email:
+                account = _find_account(email)
         except (db.DatabaseConfigurationError, db.DatabaseOperationError):
             account = pending_account
     else:
@@ -6148,6 +6159,9 @@ def _render_otp_verification():
         st.session_state.pop("pending_verification_account", None)
         st.error("OTP is unavailable. Request a new OTP.")
         return
+    registration_message = st.session_state.get("registration_otp_message")
+    if registration_message:
+        st.warning(registration_message)
     try:
         expires_at = _database_timestamp(account.get("otp_expires_at"))
     except (TypeError, ValueError, OverflowError):
@@ -6228,6 +6242,7 @@ def _render_otp_verification():
                 st.session_state.pop("pending_verification", None)
                 st.session_state.pop("pending_verification_account", None)
                 st.session_state.pop("otp_state_error", None)
+                st.session_state.pop("registration_otp_message", None)
                 st.success("Account verified. Signing you in...")
                 _start_authenticated_session(account)
     if st.button("Resend OTP", key="resend_otp"):
@@ -6370,7 +6385,6 @@ def show_login_screen():
                 profile_data = {"full_name": full_name.strip(), "business_name": full_name.strip(), "contact_name": full_name.strip(), "phone": normalized_phone}
                 db.create_profile(account["role"], created_user["id"], profile_data)
                 account.update(created_user, db_user_id=created_user["id"], profile=profile_data)
-                st.session_state["pending_verification_account"] = dict(account)
             else:
                 accounts = _accounts()
                 accounts.append(account)
@@ -6381,10 +6395,28 @@ def show_login_screen():
 
         if not db.is_configured():
             st.session_state["auth_accounts"] = existing_accounts + [account]
-        delivery_configured, delivery_message = _issue_otp(account)
-        st.success("Account created as unverified. Verify the OTP before logging in.")
-        if not delivery_configured:
-            st.warning(delivery_message)
+        try:
+            delivery_configured, delivery_message = _issue_otp(account)
+        except (db.DatabaseConfigurationError, db.DatabaseOperationError, OSError, ValueError, TypeError) as exc:
+            _set_pending_verification(account)
+            delivery_configured = False
+            delivery_message = f"OTP could not be prepared. Please use Resend OTP. Details: {exc}"
+        pending_identity = st.session_state.get("pending_verification_account", {})
+        pending_email = st.session_state.get("pending_verification")
+        if (
+            not pending_email
+            or not isinstance(pending_identity, dict)
+            or pending_identity.get("id") != account.get("id")
+            or pending_identity.get("email") != account.get("email")
+        ):
+            _set_pending_verification(account)
+            delivery_configured = False
+            delivery_message = "OTP state could not be confirmed. Please use Resend OTP."
+        st.session_state["registration_otp_message"] = (
+            "Account created. Enter the OTP sent to your email."
+            if delivery_configured
+            else f"Account created, but OTP delivery failed. {delivery_message}"
+        )
         st.rerun()
 
 

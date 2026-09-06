@@ -123,6 +123,10 @@ def get_user(identifier: str) -> Optional[Dict[str, Any]]:
     return _one(response)
 
 
+def get_user_by_id(user_id: str) -> Optional[Dict[str, Any]]:
+    return _one(connect().table("users").select("*").eq("id", user_id).limit(1).execute())
+
+
 def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
     response = connect().table("users").select("*").eq("email", email.strip().lower()).limit(1).execute()
     return _one(response)
