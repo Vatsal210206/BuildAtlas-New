@@ -26,12 +26,23 @@ class DatabaseOperationError(RuntimeError):
     """Raised when a Supabase operation cannot be completed."""
 
 
+class DuplicateUserError(DatabaseOperationError):
+    """Raised when a user email or phone is already registered."""
+
+    def __init__(self, field: str):
+        self.field = field
+        super().__init__(f"An account with this {field} already exists.")
+
+
 USER_COLUMNS = frozenset({
     "id", "email", "phone", "password_hash", "password_salt", "role", "verified",
     "otp_salt", "otp_hash", "otp_expires_at", "otp_attempts", "otp_invalidated",
     "otp_last_sent_at", "otp_delivery_status", "created_at",
 })
 USER_UPDATE_COLUMNS = USER_COLUMNS - {"id", "created_at"}
+USER_INSERT_COLUMNS = frozenset({
+    "email", "phone", "password_hash", "password_salt", "role", "verified",
+})
 PROFILE_COLUMNS = {
     "vendor_profiles": frozenset({
         "id", "user_id", "business_name", "contact_name", "phone", "address", "city",
@@ -109,7 +120,7 @@ def _log_api_error(error: APIError) -> None:
 def _api_error_message(error: APIError) -> str:
     return " ".join(str(value) for value in (
         getattr(error, "message", ""), getattr(error, "details", ""), getattr(error, "hint", "")
-    ) if value)
+    ) if value) or str(error)
 
 
 def _now() -> str:
@@ -141,18 +152,56 @@ def list_auth_users() -> List[Dict[str, Any]]:
 
 
 def create_user(data: Dict[str, Any]) -> Dict[str, Any]:
+    email = str(data.get("email", "")).strip().lower()
+    phone = str(data.get("phone", "")).strip()
+    role = str(data.get("role", "")).strip()
+    if not email or not phone or not role:
+        raise DatabaseOperationError("Email, phone, and role are required to create an account.")
+    client = connect()
+    try:
+        if _one(client.table("users").select("id").eq("email", email).limit(1).execute()):
+            raise DuplicateUserError("email")
+        if _one(client.table("users").select("id").eq("phone", phone).limit(1).execute()):
+            raise DuplicateUserError("phone")
+    except APIError as exc:
+        _log_api_error(exc)
+        raise DatabaseOperationError(
+            f"Supabase could not check whether the account already exists: {_api_error_message(exc)}"
+        ) from exc
     payload = {
-        "email": data["email"].strip().lower(),
-        "phone": data.get("phone", "").strip(),
+        "email": email,
+        "phone": phone,
         "password_hash": data["password_hash"],
         "password_salt": data["password_salt"],
-        "role": data["role"],
+        "role": role,
         "verified": bool(data.get("verified", False)),
     }
-    row = _one(connect().table("users").insert(payload).execute())
+    payload = {key: value for key, value in payload.items() if key in USER_INSERT_COLUMNS}
+    try:
+        row = _one(client.table("users").insert(payload).select("*").execute())
+    except APIError as exc:
+        _log_api_error(exc)
+        message = _api_error_message(exc)
+        lowered_message = message.lower()
+        if "users_email_key" in message or ("email" in lowered_message and "duplicate" in lowered_message):
+            raise DuplicateUserError("email") from exc
+        if "users_phone_key" in message or ("phone" in lowered_message and "duplicate" in lowered_message):
+            raise DuplicateUserError("phone") from exc
+        raise DatabaseOperationError(f"Supabase could not create the user: {message or 'database error'}") from exc
     if not row:
         raise DatabaseOperationError("Supabase did not return the created user.")
     return row
+
+
+def delete_user(user_id: str) -> None:
+    if not user_id:
+        return
+    try:
+        response = connect().table("users").delete().eq("id", user_id).execute()
+        _rows(response)
+    except APIError as exc:
+        _log_api_error(exc)
+        raise DatabaseOperationError(f"Supabase could not roll back the new user: {_api_error_message(exc)}") from exc
 
 
 def update_user(user_id: str, fields: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -181,8 +230,10 @@ def update_user(user_id: str, fields: Dict[str, Any]) -> Optional[Dict[str, Any]
             if code == "PGRST204" and missing_column:
                 column = missing_column.group(1)
                 if column in compatible_fields and column in USER_UPDATE_COLUMNS:
-                    compatible_fields.pop(column)
-                    continue
+                    raise DatabaseOperationError(
+                        f"The Supabase users table is missing required OTP/authentication column '{column}'. "
+                        "Apply the users OTP migration and reload the PostgREST schema cache."
+                    ) from exc
             raise DatabaseOperationError(f"Supabase users update failed: {message or 'unknown API error'}") from exc
     return None
 

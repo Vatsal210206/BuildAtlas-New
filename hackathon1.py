@@ -5973,8 +5973,8 @@ def _issue_otp(account):
             persisted_account = _find_account(account["email"])
             if not _otp_state_matches(persisted_account, pending_fields):
                 raise db.DatabaseOperationError("OTP state could not be confirmed after persistence.")
-        except (db.DatabaseConfigurationError, db.DatabaseOperationError):
-            return False, "The OTP could not be prepared in the database. Please try again."
+        except (db.DatabaseConfigurationError, db.DatabaseOperationError) as exc:
+            return False, f"The OTP could not be prepared in the database: {exc}"
     else:
         persisted_accounts = _load_persisted_accounts()
         for persisted_account in persisted_accounts:
@@ -6384,7 +6384,7 @@ def show_login_screen():
             errors.append("Password and confirm password must match.")
         try:
             existing_accounts = _accounts()
-        except db.DatabaseConfigurationError as exc:
+        except (db.DatabaseConfigurationError, db.DatabaseOperationError) as exc:
             st.error(str(exc))
             return
         if any(account.get("email", "") == normalized_email for account in existing_accounts if isinstance(account, dict)):
@@ -6406,6 +6406,7 @@ def show_login_screen():
             "verified": False,
             "profile": {"full_name": full_name.strip()},
         }
+        created_user = None
         try:
             if db.is_configured():
                 created_user = db.create_user(account)
@@ -6416,8 +6417,19 @@ def show_login_screen():
                 accounts = _accounts()
                 accounts.append(account)
                 _save_persisted_accounts(accounts)
-        except (OSError, json.JSONDecodeError, TypeError, ValueError, db.DatabaseOperationError) as exc:
-            st.error(f"Account could not be saved: {exc}")
+        except (OSError, json.JSONDecodeError, TypeError, ValueError, db.DatabaseConfigurationError, db.DatabaseOperationError) as exc:
+            rollback_error = None
+            if db.is_configured() and created_user and created_user.get("id"):
+                try:
+                    db.delete_user(created_user["id"])
+                except (db.DatabaseConfigurationError, db.DatabaseOperationError) as rollback_exc:
+                    rollback_error = rollback_exc
+            if isinstance(exc, db.DuplicateUserError):
+                st.error(str(exc))
+            else:
+                st.error(f"Account could not be created. {exc}")
+            if rollback_error:
+                st.error(f"The new account could not be rolled back automatically: {rollback_error}")
             return
 
         if not db.is_configured():
