@@ -35,7 +35,7 @@ USER_UPDATE_COLUMNS = USER_COLUMNS - {"id", "created_at"}
 PROFILE_COLUMNS = {
     "vendor_profiles": frozenset({
         "id", "user_id", "business_name", "contact_name", "phone", "address", "city",
-        "state", "gst_number", "portfolio_summary", "website", "specializations", "created_at"
+        "state", "created_at"
     }),
     "builder_profiles": frozenset({
         "id", "user_id", "business_name", "contact_name", "phone", "address", "city",
@@ -191,7 +191,10 @@ def get_profile(user: Dict[str, Any]) -> Dict[str, Any]:
     table = {"DEALER / SUPPLIER": "vendor_profiles", "BUILDER / CONTRACTOR": "builder_profiles", "CUSTOMER": "customer_profiles"}.get(user.get("role"))
     if not table:
         return {}
-    return _one(connect().table(table).select("*").eq("user_id", user["id"]).limit(1).execute()) or {}
+    try:
+        return _one(connect().table(table).select("*").eq("user_id", user["id"]).limit(1).execute()) or {}
+    except APIError as exc:
+        raise DatabaseOperationError(f"Supabase could not load the {table} profile: {_api_error_message(exc)}") from exc
 
 
 def create_profile(role: str, user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -202,14 +205,39 @@ def create_profile(role: str, user_id: str, data: Dict[str, Any]) -> Dict[str, A
         payload = {"user_id": user_id, "full_name": data.get("full_name", ""), "phone": data.get("phone", "")}
     else:
         payload = {"user_id": user_id, "business_name": data.get("business_name", ""), "contact_name": data.get("contact_name", data.get("full_name", "")), "phone": data.get("phone", ""), "address": data.get("address", ""), "city": data.get("city", ""), "state": data.get("state", ""), "gst_number": data.get("gst_number", ""), "portfolio_summary": data.get("portfolio_summary", ""), "website": data.get("website", ""), "specializations": data.get("specializations", "")}
-    return _one(connect().table(table).insert(payload).execute()) or {}
+    allowed = PROFILE_COLUMNS[table] - {"id", "created_at"}
+    payload = {key: value for key, value in payload.items() if key in allowed}
+    try:
+        row = _one(connect().table(table).insert(payload).select("*").execute())
+    except APIError as exc:
+        raise DatabaseOperationError(f"Supabase could not create the {table} profile: {_api_error_message(exc)}") from exc
+    if not row:
+        raise DatabaseOperationError(f"Supabase did not return the created {table} profile.")
+    return row
 
 
 def update_profile(role: str, user_id: str, fields: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     table = {"DEALER / SUPPLIER": "vendor_profiles", "BUILDER / CONTRACTOR": "builder_profiles", "CUSTOMER": "customer_profiles"}.get(role)
     if not table:
         return None
-    return _one(connect().table(table).update(fields).eq("user_id", user_id).execute())
+    allowed = PROFILE_COLUMNS[table] - {"id", "user_id", "created_at"}
+    payload = {key: value for key, value in fields.items() if key in allowed}
+    if not payload:
+        raise DatabaseOperationError(f"No supported fields were provided for {table}.")
+    client = connect()
+    try:
+        existing = _one(client.table(table).select("id").eq("user_id", user_id).limit(1).execute())
+        if existing:
+            updated = _one(client.table(table).update(payload).eq("user_id", user_id).select("*").execute())
+            if not updated:
+                raise DatabaseOperationError(f"Supabase did not update the {table} profile.")
+            return updated
+        created = _one(client.table(table).insert({"user_id": user_id, **payload}).select("*").execute())
+    except APIError as exc:
+        raise DatabaseOperationError(f"Supabase could not save the {table} profile: {_api_error_message(exc)}") from exc
+    if not created:
+        raise DatabaseOperationError(f"Supabase did not create the missing {table} profile.")
+    return created
 
 
 def list_builder_projects(user_id: str) -> List[Dict[str, Any]]:

@@ -5531,24 +5531,51 @@ def dealer_reviews():
 
 
 def dealer_profile():
-    """Render a lightweight session-only dealer business profile."""
+    """Render and persist the authenticated vendor business profile."""
     st.markdown('<h1 class="main-header">🏢 Business Profile</h1>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">Manage your supplier business information</p>', unsafe_allow_html=True)
-    st.session_state.setdefault("dealer_business_name", "BuildAtlas Materials Supply")
-    st.session_state.setdefault("dealer_contact_name", "Material Partner")
-    st.session_state.setdefault("dealer_phone", "")
+    account = _current_account()
+    profile = {}
+    if db.is_configured():
+        try:
+            profile = db.get_profile(account) or {}
+        except (db.DatabaseConfigurationError, db.DatabaseOperationError) as exc:
+            st.error(f"Vendor profile could not be loaded: {exc}")
+            return
+    st.session_state["dealer_business_name"] = profile.get("business_name", "BuildAtlas Materials Supply")
+    st.session_state["dealer_contact_name"] = profile.get("contact_name", "Material Partner")
+    st.session_state["dealer_phone"] = profile.get("phone", "")
     with st.form("dealer_profile_form"):
         business_name = st.text_input("Business Name", value=st.session_state["dealer_business_name"])
         contact_name = st.text_input("Contact Name", value=st.session_state["dealer_contact_name"])
         phone = st.text_input("Phone", value=st.session_state["dealer_phone"])
         submitted = st.form_submit_button("Save Profile", type="primary", use_container_width=True)
     if submitted:
-        st.session_state["dealer_business_name"] = business_name or "BuildAtlas Materials Supply"
-        st.session_state["dealer_contact_name"] = contact_name or "Material Partner"
-        st.session_state["dealer_phone"] = phone
         if db.is_configured():
-            db.update_profile(ROLE_VENDOR, _current_account()["id"], {"business_name": st.session_state["dealer_business_name"], "contact_name": st.session_state["dealer_contact_name"], "phone": phone})
-        st.success("Business profile saved for this session.")
+            try:
+                saved_profile = db.update_profile(
+                    ROLE_VENDOR,
+                    account["id"],
+                    {
+                        "business_name": business_name or "BuildAtlas Materials Supply",
+                        "contact_name": contact_name or "Material Partner",
+                        "phone": phone,
+                    },
+                )
+                if not saved_profile:
+                    raise db.DatabaseOperationError("Supabase did not return the saved vendor profile.")
+                profile = db.get_profile(account) or {}
+                st.session_state["dealer_business_name"] = profile.get("business_name", "")
+                st.session_state["dealer_contact_name"] = profile.get("contact_name", "")
+                st.session_state["dealer_phone"] = profile.get("phone", "")
+            except (db.DatabaseConfigurationError, db.DatabaseOperationError) as exc:
+                st.error(f"Vendor profile could not be saved: {exc}")
+                return
+        else:
+            st.session_state["dealer_business_name"] = business_name or "BuildAtlas Materials Supply"
+            st.session_state["dealer_contact_name"] = contact_name or "Material Partner"
+            st.session_state["dealer_phone"] = phone
+        st.success("Business profile saved.")
 
 
 def admin_dashboard():
