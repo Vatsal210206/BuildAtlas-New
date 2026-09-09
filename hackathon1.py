@@ -4872,33 +4872,14 @@ def builder_projects():
     st.markdown('<h1 class="main-header">🏗️ Builder Projects</h1>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">Showcase completed work and manage incoming customer requirements</p>', unsafe_allow_html=True)
     portfolio = _builder_portfolio_state()
-    active_projects = [
-        project for project in portfolio.get("builder_projects", [])
-        if not str(project.get("status", "")).startswith("Past Project |")
-    ]
     past_projects = portfolio.get("past_projects", [])
 
-    st.markdown("### CURRENT PROJECTS")
-    if not active_projects:
-        st.info("No active projects added yet.")
-    for project in active_projects:
-        st.markdown(
-            f'<div class="ba-card"><div class="ba-card-title">{project.get("project_name", "Project")}</div>'
-            f'<div style="color:#b0c9e3;font-size:13px;line-height:1.9;">'
-            f'📍 {project.get("city") or "N/A"}<br>🏗️ Stage: {project.get("status") or "Planning"}<br>'
-            f'📊 Progress: {project.get("progress", 0)}%<br>💰 Estimated value: {project.get("estimated_value") or "₹0"}'
-            '</div></div>',
-            unsafe_allow_html=True,
-        )
-
     st.markdown("### A. PAST PROJECTS")
-    st.caption("Showcase your previous work. These entries are separate from customer requirements.")
+    st.caption("Showcase your previous work from the existing builder projects store.")
     with st.expander("➕ Add Past Project", expanded=False):
         with st.form("builder_past_project_form"):
             project_name = st.text_input("Project name")
             city = st.text_input("City / location")
-            project_type = st.selectbox("Project type", ["Residential", "Commercial", "Renovation", "Infrastructure", "Other"])
-            completion_year = st.number_input("Completion year", min_value=1900, max_value=datetime.now().year, value=datetime.now().year, step=1)
             estimated_value = st.text_input("Estimated project value", placeholder="e.g. ₹48 Lakhs")
             description = st.text_area("Project description / summary", height=100)
             submitted = st.form_submit_button("Save Project", type="primary")
@@ -4909,8 +4890,6 @@ def builder_projects():
                     project = db.create_builder_past_project(account.get("id"), {
                         "project_name": project_name.strip(),
                         "city": city.strip(),
-                        "project_type": project_type,
-                        "completion_year": int(completion_year),
                         "estimated_value": estimated_value.strip(),
                         "description": description.strip(),
                     })
@@ -4920,8 +4899,8 @@ def builder_projects():
             else:
                 project = {
                     "id": f"PRJ-{uuid.uuid4().hex[:8].upper()}",
-                    "project_name": project_name.strip(), "city": city.strip(), "project_type": project_type,
-                    "completion_year": int(completion_year), "estimated_value": estimated_value.strip(),
+                    "project_name": project_name.strip(), "city": city.strip(),
+                    "estimated_value": estimated_value.strip(),
                     "description": description.strip(),
                 }
             state = _builder_portfolio_state()
@@ -4931,13 +4910,13 @@ def builder_projects():
             st.rerun()
 
     if not past_projects:
-        st.info("No past projects added yet. Create your first portfolio entry above.")
+        st.info("No past projects added yet.")
     for project in past_projects:
         project_id = str(project.get("id", ""))
         name = project.get("project_name") or "Past project"
         with st.container(border=True):
             st.markdown(f"### {name}")
-            st.write(f"📍 {project.get('city') or 'Location not provided'} · 🏗️ {project.get('project_type') or 'Project type not provided'} · 📅 {project.get('completion_year') or 'Year not provided'}")
+            st.write(f"📍 {project.get('city') or 'Location not provided'}")
             st.write(f"💰 {project.get('estimated_value') or 'Value not provided'}")
             if project.get("description"):
                 st.write(project["description"])
@@ -4946,15 +4925,11 @@ def builder_projects():
                 with st.form(f"{edit_key}_form"):
                     edited_name = st.text_input("Project name", value=project.get("project_name", ""))
                     edited_city = st.text_input("City / location", value=project.get("city", ""))
-                    project_types = ["Residential", "Commercial", "Renovation", "Infrastructure", "Other"]
-                    current_type = project.get("project_type") if project.get("project_type") in project_types else "Other"
-                    edited_type = st.selectbox("Project type", project_types, index=project_types.index(current_type))
-                    edited_year = st.number_input("Completion year", min_value=1900, max_value=datetime.now().year, value=int(project.get("completion_year") or datetime.now().year), step=1)
                     edited_value = st.text_input("Estimated project value", value=project.get("estimated_value", ""))
                     edited_description = st.text_area("Project description / summary", value=project.get("description", ""))
                     save_edit = st.form_submit_button("Save changes", type="primary")
                 if save_edit:
-                    fields = {"project_name": edited_name.strip(), "city": edited_city.strip(), "project_type": edited_type, "completion_year": int(edited_year), "estimated_value": edited_value.strip(), "description": edited_description.strip()}
+                    fields = {"project_name": edited_name.strip(), "city": edited_city.strip(), "estimated_value": edited_value.strip(), "description": edited_description.strip()}
                     try:
                         updated = db.update_builder_past_project(_current_account().get("id"), project_id, fields) if db.is_configured() else {**project, **fields}
                         if updated:
