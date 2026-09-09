@@ -56,6 +56,9 @@ PROFILE_COLUMNS = {
         "id", "user_id", "full_name", "phone", "created_at"
     }),
 }
+BUILDER_PAST_PROJECT_COLUMNS = frozenset({
+    "project_name", "city", "project_type", "completion_year", "estimated_value", "description", "image_url",
+})
 
 
 def _setting(name: str) -> str:
@@ -318,7 +321,12 @@ def list_builder_past_projects(user_id: str) -> List[Dict[str, Any]]:
 def create_builder_past_project(user_id: str, fields: Dict[str, Any]) -> Dict[str, Any]:
     if not user_id:
         raise DatabaseOperationError("A builder user ID is required to create a past project.")
-    payload = {**fields, "user_id": user_id}
+    if not isinstance(fields, dict):
+        raise DatabaseOperationError("Past project fields must be a dictionary.")
+    payload = {key: value for key, value in fields.items() if key in BUILDER_PAST_PROJECT_COLUMNS}
+    if not payload.get("project_name"):
+        raise DatabaseOperationError("A past project name is required.")
+    payload["user_id"] = user_id
     try:
         row = _one(connect().table("builder_past_projects").insert(payload).select("*").execute())
     except APIError as exc:
@@ -332,9 +340,16 @@ def create_builder_past_project(user_id: str, fields: Dict[str, Any]) -> Dict[st
 def update_builder_past_project(user_id: str, project_id: str, fields: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not user_id or not project_id:
         raise DatabaseOperationError("A builder user ID and past project ID are required to update a past project.")
+    if not isinstance(fields, dict):
+        raise DatabaseOperationError("Past project fields must be a dictionary.")
+    payload = {key: value for key, value in fields.items() if key in BUILDER_PAST_PROJECT_COLUMNS}
+    if not payload:
+        raise DatabaseOperationError("No supported past project fields were provided.")
+    if "project_name" in payload and not payload["project_name"]:
+        raise DatabaseOperationError("A past project name is required.")
     try:
         row = _one(
-            connect().table("builder_past_projects").update({**fields, "updated_at": _now()})
+            connect().table("builder_past_projects").update({**payload, "updated_at": _now()})
             .eq("id", project_id).eq("user_id", user_id).select("*").execute()
         )
     except APIError as exc:
@@ -349,9 +364,9 @@ def delete_builder_past_project(user_id: str, project_id: str) -> None:
     if not user_id or not project_id:
         raise DatabaseOperationError("A builder user ID and past project ID are required to delete a past project.")
     try:
-        response = connect().table("builder_past_projects").delete().eq("id", project_id).eq("user_id", user_id).execute()
+        response = connect().table("builder_past_projects").delete().eq("id", project_id).eq("user_id", user_id).select("id").execute()
         rows = _rows(response)
-        if response.data is not None and not rows:
+        if not rows:
             raise DatabaseOperationError("Past project was not found for the authenticated builder.")
     except APIError as exc:
         _log_api_error(exc)

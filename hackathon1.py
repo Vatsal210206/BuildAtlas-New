@@ -4703,12 +4703,23 @@ def _builder_portfolio_state():
     account = _current_account()
     user_id = account.get("id") if db.is_configured() else None
     if db.is_configured() and user_id:
-        projects = db.list_builder_projects(user_id)
-        quotations = db.list_builder_quotations(user_id)
-        profile = db.get_profile(account) or {}
+        try:
+            projects = db.list_builder_projects(user_id)
+            quotations = db.list_builder_quotations(user_id)
+            profile = db.get_profile(account) or {}
+            past_projects = db.list_builder_past_projects(user_id)
+        except (AttributeError, db.DatabaseConfigurationError, db.DatabaseOperationError) as exc:
+            st.error(f"Builder portfolio data could not be loaded: {exc}")
+            state = st.session_state.setdefault("builder_portfolio_state", {
+                "builder_projects": [],
+                "builder_past_projects": [],
+                "builder_quotations": [],
+                "builder_profile": _builder_profile_payload(account.get("profile", {})),
+            })
+            return state
         state = {
             "builder_projects": projects,
-            "builder_past_projects": db.list_builder_past_projects(user_id),
+            "builder_past_projects": past_projects,
             "builder_quotations": quotations,
             "builder_profile": _builder_profile_payload(profile),
         }

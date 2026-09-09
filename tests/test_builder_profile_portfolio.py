@@ -1,4 +1,13 @@
+import db
+
 from hackathon1 import _builder_profile_payload
+
+
+def test_builder_past_project_database_api_is_available():
+    assert callable(db.list_builder_past_projects)
+    assert callable(db.create_builder_past_project)
+    assert callable(db.update_builder_past_project)
+    assert callable(db.delete_builder_past_project)
 
 
 def test_builder_profile_payload_normalizes_business_details():
