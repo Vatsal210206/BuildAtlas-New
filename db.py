@@ -56,8 +56,9 @@ PROFILE_COLUMNS = {
         "id", "user_id", "full_name", "phone", "created_at"
     }),
 }
+BUILDER_PAST_PROJECT_STATUS_PREFIX = "Past Project"
 BUILDER_PAST_PROJECT_COLUMNS = frozenset({
-    "project_name", "city", "project_type", "completion_year", "estimated_value", "description", "image_url",
+    "project_name", "city", "estimated_value", "description", "status", "progress",
 })
 
 
@@ -306,13 +307,30 @@ def update_builder_project(project_id: str, fields: Dict[str, Any]) -> Optional[
     return _one(connect().table("builder_projects").update({**fields, "updated_at": _now()}).eq("id", project_id).execute())
 
 
+def _past_project_view(row: Dict[str, Any]) -> Dict[str, Any]:
+    result = dict(row)
+    parts = [part.strip() for part in str(result.get("status", "")).split("|")]
+    if len(parts) >= 3 and parts[0] == BUILDER_PAST_PROJECT_STATUS_PREFIX:
+        result["project_type"] = parts[1]
+        try:
+            result["completion_year"] = int(parts[2])
+        except ValueError:
+            result["completion_year"] = None
+    else:
+        result.setdefault("project_type", "Other")
+        result.setdefault("completion_year", None)
+    return result
+
+
 def list_builder_past_projects(user_id: str) -> List[Dict[str, Any]]:
     if not user_id:
         raise DatabaseOperationError("A builder user ID is required to load past projects.")
     try:
-        return _rows(
-            connect().table("builder_past_projects").select("*").eq("user_id", user_id).order("created_at", desc=True).execute()
-        )
+        return [_past_project_view(row) for row in _rows(
+            connect().table("builder_projects").select("*").eq("user_id", user_id)
+            .ilike("status", f"{BUILDER_PAST_PROJECT_STATUS_PREFIX} |%")
+            .order("created_at", desc=True).execute()
+        )]
     except APIError as exc:
         _log_api_error(exc)
         raise DatabaseOperationError(f"Supabase could not load past projects: {_api_error_message(exc)}") from exc
@@ -323,18 +341,26 @@ def create_builder_past_project(user_id: str, fields: Dict[str, Any]) -> Dict[st
         raise DatabaseOperationError("A builder user ID is required to create a past project.")
     if not isinstance(fields, dict):
         raise DatabaseOperationError("Past project fields must be a dictionary.")
+    project_type = str(fields.get("project_type", "Other")).strip() or "Other"
+    completion_year = fields.get("completion_year")
+    try:
+        completion_year = int(completion_year)
+    except (TypeError, ValueError) as exc:
+        raise DatabaseOperationError("A valid completion year is required for a past project.") from exc
     payload = {key: value for key, value in fields.items() if key in BUILDER_PAST_PROJECT_COLUMNS}
     if not payload.get("project_name"):
         raise DatabaseOperationError("A past project name is required.")
+    payload["status"] = f"{BUILDER_PAST_PROJECT_STATUS_PREFIX} | {project_type} | {completion_year}"
+    payload["progress"] = 100
     payload["user_id"] = user_id
     try:
-        row = _one(connect().table("builder_past_projects").insert(payload).select("*").execute())
+        row = _one(connect().table("builder_projects").insert(payload).select("*").execute())
     except APIError as exc:
         _log_api_error(exc)
         raise DatabaseOperationError(f"Supabase could not create the past project: {_api_error_message(exc)}") from exc
     if not row:
         raise DatabaseOperationError("Supabase did not return the created past project.")
-    return row
+    return _past_project_view(row)
 
 
 def update_builder_past_project(user_id: str, project_id: str, fields: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -342,29 +368,38 @@ def update_builder_past_project(user_id: str, project_id: str, fields: Dict[str,
         raise DatabaseOperationError("A builder user ID and past project ID are required to update a past project.")
     if not isinstance(fields, dict):
         raise DatabaseOperationError("Past project fields must be a dictionary.")
+    project_type = str(fields.get("project_type", "Other")).strip() or "Other"
+    completion_year = fields.get("completion_year")
+    try:
+        completion_year = int(completion_year)
+    except (TypeError, ValueError) as exc:
+        raise DatabaseOperationError("A valid completion year is required for a past project.") from exc
     payload = {key: value for key, value in fields.items() if key in BUILDER_PAST_PROJECT_COLUMNS}
     if not payload:
         raise DatabaseOperationError("No supported past project fields were provided.")
     if "project_name" in payload and not payload["project_name"]:
         raise DatabaseOperationError("A past project name is required.")
+    payload["status"] = f"{BUILDER_PAST_PROJECT_STATUS_PREFIX} | {project_type} | {completion_year}"
+    payload["progress"] = 100
     try:
         row = _one(
-            connect().table("builder_past_projects").update({**payload, "updated_at": _now()})
-            .eq("id", project_id).eq("user_id", user_id).select("*").execute()
+            connect().table("builder_projects").update({**payload, "updated_at": _now()})
+            .eq("id", project_id).eq("user_id", user_id)
+            .ilike("status", f"{BUILDER_PAST_PROJECT_STATUS_PREFIX} |%").select("*").execute()
         )
     except APIError as exc:
         _log_api_error(exc)
         raise DatabaseOperationError(f"Supabase could not update the past project: {_api_error_message(exc)}") from exc
     if row is None:
         raise DatabaseOperationError("Past project was not found for the authenticated builder.")
-    return row
+    return _past_project_view(row)
 
 
 def delete_builder_past_project(user_id: str, project_id: str) -> None:
     if not user_id or not project_id:
         raise DatabaseOperationError("A builder user ID and past project ID are required to delete a past project.")
     try:
-        response = connect().table("builder_past_projects").delete().eq("id", project_id).eq("user_id", user_id).select("id").execute()
+        response = connect().table("builder_projects").delete().eq("id", project_id).eq("user_id", user_id).ilike("status", f"{BUILDER_PAST_PROJECT_STATUS_PREFIX} |%").select("id").execute()
         rows = _rows(response)
         if not rows:
             raise DatabaseOperationError("Past project was not found for the authenticated builder.")

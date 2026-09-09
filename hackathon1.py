@@ -4712,14 +4712,14 @@ def _builder_portfolio_state():
             st.error(f"Builder portfolio data could not be loaded: {exc}")
             state = st.session_state.setdefault("builder_portfolio_state", {
                 "builder_projects": [],
-                "builder_past_projects": [],
+                "past_projects": [],
                 "builder_quotations": [],
                 "builder_profile": _builder_profile_payload(account.get("profile", {})),
             })
             return state
         state = {
             "builder_projects": projects,
-            "builder_past_projects": past_projects,
+            "past_projects": past_projects,
             "builder_quotations": quotations,
             "builder_profile": _builder_profile_payload(profile),
         }
@@ -4731,7 +4731,7 @@ def _builder_portfolio_state():
             {"id": "PRJ-1001", "project_name": "Sharma Residence", "city": "Ghaziabad", "status": "Structure", "progress": 68, "value": "₹48 Lakhs", "description": "Residential structure and finishing"},
             {"id": "PRJ-1002", "project_name": "Mehta Villa", "city": "Noida", "status": "Brickwork", "progress": 42, "value": "₹62 Lakhs", "description": "Premium villa construction"},
         ],
-        "builder_past_projects": [],
+        "past_projects": [],
         "builder_quotations": [
             {"id": "Q-1001", "customer_name": "Rohan Mehta", "project_name": "3BHK home construction", "amount": "₹18.5 Lakhs", "status": "Draft", "notes": "Site visit scheduled for Saturday"},
         ],
@@ -4872,7 +4872,24 @@ def builder_projects():
     st.markdown('<h1 class="main-header">🏗️ Builder Projects</h1>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">Showcase completed work and manage incoming customer requirements</p>', unsafe_allow_html=True)
     portfolio = _builder_portfolio_state()
-    past_projects = portfolio.get("builder_past_projects", [])
+    active_projects = [
+        project for project in portfolio.get("builder_projects", [])
+        if not str(project.get("status", "")).startswith("Past Project |")
+    ]
+    past_projects = portfolio.get("past_projects", [])
+
+    st.markdown("### CURRENT PROJECTS")
+    if not active_projects:
+        st.info("No active projects added yet.")
+    for project in active_projects:
+        st.markdown(
+            f'<div class="ba-card"><div class="ba-card-title">{project.get("project_name", "Project")}</div>'
+            f'<div style="color:#b0c9e3;font-size:13px;line-height:1.9;">'
+            f'📍 {project.get("city") or "N/A"}<br>🏗️ Stage: {project.get("status") or "Planning"}<br>'
+            f'📊 Progress: {project.get("progress", 0)}%<br>💰 Estimated value: {project.get("estimated_value") or "₹0"}'
+            '</div></div>',
+            unsafe_allow_html=True,
+        )
 
     st.markdown("### A. PAST PROJECTS")
     st.caption("Showcase your previous work. These entries are separate from customer requirements.")
@@ -4884,7 +4901,6 @@ def builder_projects():
             completion_year = st.number_input("Completion year", min_value=1900, max_value=datetime.now().year, value=datetime.now().year, step=1)
             estimated_value = st.text_input("Estimated project value", placeholder="e.g. ₹48 Lakhs")
             description = st.text_area("Project description / summary", height=100)
-            image_url = st.text_input("Project image URL (optional)", placeholder="https://...")
             submitted = st.form_submit_button("Save Project", type="primary")
         if submitted and project_name.strip():
             if db.is_configured():
@@ -4897,7 +4913,6 @@ def builder_projects():
                         "completion_year": int(completion_year),
                         "estimated_value": estimated_value.strip(),
                         "description": description.strip(),
-                        "image_url": image_url.strip(),
                     })
                 except (db.DatabaseConfigurationError, db.DatabaseOperationError) as exc:
                     st.error(f"Past project could not be saved: {exc}")
@@ -4907,10 +4922,10 @@ def builder_projects():
                     "id": f"PRJ-{uuid.uuid4().hex[:8].upper()}",
                     "project_name": project_name.strip(), "city": city.strip(), "project_type": project_type,
                     "completion_year": int(completion_year), "estimated_value": estimated_value.strip(),
-                    "description": description.strip(), "image_url": image_url.strip(),
+                    "description": description.strip(),
                 }
             state = _builder_portfolio_state()
-            state.setdefault("builder_past_projects", []).insert(0, project)
+            state.setdefault("past_projects", []).insert(0, project)
             st.session_state["builder_portfolio_state"] = state
             st.success("Past project saved to your portfolio.")
             st.rerun()
@@ -4926,8 +4941,6 @@ def builder_projects():
             st.write(f"💰 {project.get('estimated_value') or 'Value not provided'}")
             if project.get("description"):
                 st.write(project["description"])
-            if project.get("image_url"):
-                st.image(project["image_url"], use_container_width=True)
             edit_key = f"edit_past_project_{project_id}"
             with st.expander("Edit project", expanded=False):
                 with st.form(f"{edit_key}_form"):
@@ -4939,10 +4952,9 @@ def builder_projects():
                     edited_year = st.number_input("Completion year", min_value=1900, max_value=datetime.now().year, value=int(project.get("completion_year") or datetime.now().year), step=1)
                     edited_value = st.text_input("Estimated project value", value=project.get("estimated_value", ""))
                     edited_description = st.text_area("Project description / summary", value=project.get("description", ""))
-                    edited_image_url = st.text_input("Project image URL (optional)", value=project.get("image_url", ""))
                     save_edit = st.form_submit_button("Save changes", type="primary")
                 if save_edit:
-                    fields = {"project_name": edited_name.strip(), "city": edited_city.strip(), "project_type": edited_type, "completion_year": int(edited_year), "estimated_value": edited_value.strip(), "description": edited_description.strip(), "image_url": edited_image_url.strip()}
+                    fields = {"project_name": edited_name.strip(), "city": edited_city.strip(), "project_type": edited_type, "completion_year": int(edited_year), "estimated_value": edited_value.strip(), "description": edited_description.strip()}
                     try:
                         updated = db.update_builder_past_project(_current_account().get("id"), project_id, fields) if db.is_configured() else {**project, **fields}
                         if updated:
@@ -4956,7 +4968,7 @@ def builder_projects():
                     if db.is_configured():
                         db.delete_builder_past_project(_current_account().get("id"), project_id)
                     state = _builder_portfolio_state()
-                    state["builder_past_projects"] = [item for item in state.get("builder_past_projects", []) if str(item.get("id")) != project_id]
+                    state["past_projects"] = [item for item in state.get("past_projects", []) if str(item.get("id")) != project_id]
                     st.session_state["builder_portfolio_state"] = state
                     st.success("Past project deleted.")
                     st.rerun()
