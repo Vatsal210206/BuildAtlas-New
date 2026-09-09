@@ -303,6 +303,61 @@ def update_builder_project(project_id: str, fields: Dict[str, Any]) -> Optional[
     return _one(connect().table("builder_projects").update({**fields, "updated_at": _now()}).eq("id", project_id).execute())
 
 
+def list_builder_past_projects(user_id: str) -> List[Dict[str, Any]]:
+    if not user_id:
+        raise DatabaseOperationError("A builder user ID is required to load past projects.")
+    try:
+        return _rows(
+            connect().table("builder_past_projects").select("*").eq("user_id", user_id).order("created_at", desc=True).execute()
+        )
+    except APIError as exc:
+        _log_api_error(exc)
+        raise DatabaseOperationError(f"Supabase could not load past projects: {_api_error_message(exc)}") from exc
+
+
+def create_builder_past_project(user_id: str, fields: Dict[str, Any]) -> Dict[str, Any]:
+    if not user_id:
+        raise DatabaseOperationError("A builder user ID is required to create a past project.")
+    payload = {**fields, "user_id": user_id}
+    try:
+        row = _one(connect().table("builder_past_projects").insert(payload).select("*").execute())
+    except APIError as exc:
+        _log_api_error(exc)
+        raise DatabaseOperationError(f"Supabase could not create the past project: {_api_error_message(exc)}") from exc
+    if not row:
+        raise DatabaseOperationError("Supabase did not return the created past project.")
+    return row
+
+
+def update_builder_past_project(user_id: str, project_id: str, fields: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not user_id or not project_id:
+        raise DatabaseOperationError("A builder user ID and past project ID are required to update a past project.")
+    try:
+        row = _one(
+            connect().table("builder_past_projects").update({**fields, "updated_at": _now()})
+            .eq("id", project_id).eq("user_id", user_id).select("*").execute()
+        )
+    except APIError as exc:
+        _log_api_error(exc)
+        raise DatabaseOperationError(f"Supabase could not update the past project: {_api_error_message(exc)}") from exc
+    if row is None:
+        raise DatabaseOperationError("Past project was not found for the authenticated builder.")
+    return row
+
+
+def delete_builder_past_project(user_id: str, project_id: str) -> None:
+    if not user_id or not project_id:
+        raise DatabaseOperationError("A builder user ID and past project ID are required to delete a past project.")
+    try:
+        response = connect().table("builder_past_projects").delete().eq("id", project_id).eq("user_id", user_id).execute()
+        rows = _rows(response)
+        if response.data is not None and not rows:
+            raise DatabaseOperationError("Past project was not found for the authenticated builder.")
+    except APIError as exc:
+        _log_api_error(exc)
+        raise DatabaseOperationError(f"Supabase could not delete the past project: {_api_error_message(exc)}") from exc
+
+
 def list_builder_quotations(user_id: str) -> List[Dict[str, Any]]:
     return _rows(connect().table("builder_quotations").select("*").eq("user_id", user_id).order("created_at", desc=True).execute())
 

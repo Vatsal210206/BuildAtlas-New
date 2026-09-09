@@ -46,4 +46,20 @@ CREATE TABLE IF NOT EXISTS public.builder_quotations (
 CREATE INDEX IF NOT EXISTS builder_projects_user_id_idx ON public.builder_projects(user_id);
 CREATE INDEX IF NOT EXISTS builder_quotations_user_id_idx ON public.builder_quotations(user_id);
 
+CREATE TABLE IF NOT EXISTS public.builder_past_projects (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    project_name text NOT NULL,
+    city text NOT NULL DEFAULT '',
+    project_type text NOT NULL DEFAULT '',
+    completion_year integer,
+    estimated_value text DEFAULT '',
+    description text DEFAULT '',
+    image_url text DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS builder_past_projects_user_id_idx ON public.builder_past_projects(user_id);
+
 NOTIFY pgrst, 'reload schema';
