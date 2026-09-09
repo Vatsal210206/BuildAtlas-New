@@ -29,7 +29,7 @@ create table if not exists builder_profiles (
 );
 create table if not exists builder_projects (
     id uuid primary key default gen_random_uuid(), user_id uuid not null references users(id) on delete cascade,
-    project_name text not null, city text default '', status text not null default 'Planning', progress integer not null default 0 check (progress between 0 and 100),
+    project_name text not null,
     estimated_value text default '', description text default '', created_at timestamptz not null default now(), updated_at timestamptz not null default now()
 );
 create table if not exists builder_quotations (

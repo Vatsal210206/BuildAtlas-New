@@ -57,7 +57,7 @@ PROFILE_COLUMNS = {
     }),
 }
 BUILDER_PAST_PROJECT_COLUMNS = frozenset({
-    "project_name", "city", "estimated_value", "description",
+    "project_name", "estimated_value", "description",
 })
 
 
@@ -312,7 +312,7 @@ def list_builder_past_projects(user_id: str) -> List[Dict[str, Any]]:
     try:
         return _rows(
             connect().table("builder_projects")
-            .select("id,user_id,project_name,city,estimated_value,description,created_at,updated_at")
+            .select("id,user_id,project_name,estimated_value,description,created_at,updated_at")
             .eq("user_id", user_id).order("created_at", desc=True).execute()
         )
     except APIError as exc:
@@ -332,7 +332,7 @@ def create_builder_past_project(user_id: str, fields: Dict[str, Any]) -> Dict[st
     try:
         row = _one(
             connect().table("builder_projects")
-            .insert(payload).select("id,user_id,project_name,city,estimated_value,description,created_at,updated_at").execute()
+            .insert(payload).select("id,user_id,project_name,estimated_value,description,created_at,updated_at").execute()
         )
     except APIError as exc:
         _log_api_error(exc)
@@ -356,7 +356,7 @@ def update_builder_past_project(user_id: str, project_id: str, fields: Dict[str,
         row = _one(
             connect().table("builder_projects").update({**payload, "updated_at": _now()})
             .eq("id", project_id).eq("user_id", user_id)
-            .select("id,user_id,project_name,city,estimated_value,description,created_at,updated_at").execute()
+            .select("id,user_id,project_name,estimated_value,description,created_at,updated_at").execute()
         )
     except APIError as exc:
         _log_api_error(exc)

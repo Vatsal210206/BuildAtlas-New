@@ -4728,8 +4728,8 @@ def _builder_portfolio_state():
 
     state = st.session_state.setdefault("builder_portfolio_state", {
         "builder_projects": [
-            {"id": "PRJ-1001", "project_name": "Sharma Residence", "city": "Ghaziabad", "status": "Structure", "progress": 68, "value": "₹48 Lakhs", "description": "Residential structure and finishing"},
-            {"id": "PRJ-1002", "project_name": "Mehta Villa", "city": "Noida", "status": "Brickwork", "progress": 42, "value": "₹62 Lakhs", "description": "Premium villa construction"},
+            {"id": "PRJ-1001", "project_name": "Sharma Residence", "estimated_value": "₹48 Lakhs", "description": "Residential structure and finishing"},
+            {"id": "PRJ-1002", "project_name": "Mehta Villa", "estimated_value": "₹62 Lakhs", "description": "Premium villa construction"},
         ],
         "past_projects": [],
         "builder_quotations": [
@@ -4879,7 +4879,6 @@ def builder_projects():
     with st.expander("➕ Add Past Project", expanded=False):
         with st.form("builder_past_project_form"):
             project_name = st.text_input("Project name")
-            city = st.text_input("City / location")
             estimated_value = st.text_input("Estimated project value", placeholder="e.g. ₹48 Lakhs")
             description = st.text_area("Project description / summary", height=100)
             submitted = st.form_submit_button("Save Project", type="primary")
@@ -4889,7 +4888,6 @@ def builder_projects():
                 try:
                     project = db.create_builder_past_project(account.get("id"), {
                         "project_name": project_name.strip(),
-                        "city": city.strip(),
                         "estimated_value": estimated_value.strip(),
                         "description": description.strip(),
                     })
@@ -4899,7 +4897,7 @@ def builder_projects():
             else:
                 project = {
                     "id": f"PRJ-{uuid.uuid4().hex[:8].upper()}",
-                    "project_name": project_name.strip(), "city": city.strip(),
+                    "project_name": project_name.strip(),
                     "estimated_value": estimated_value.strip(),
                     "description": description.strip(),
                 }
@@ -4916,7 +4914,6 @@ def builder_projects():
         name = project.get("project_name") or "Past project"
         with st.container(border=True):
             st.markdown(f"### {name}")
-            st.write(f"📍 {project.get('city') or 'Location not provided'}")
             st.write(f"💰 {project.get('estimated_value') or 'Value not provided'}")
             if project.get("description"):
                 st.write(project["description"])
@@ -4924,12 +4921,11 @@ def builder_projects():
             with st.expander("Edit project", expanded=False):
                 with st.form(f"{edit_key}_form"):
                     edited_name = st.text_input("Project name", value=project.get("project_name", ""))
-                    edited_city = st.text_input("City / location", value=project.get("city", ""))
                     edited_value = st.text_input("Estimated project value", value=project.get("estimated_value", ""))
                     edited_description = st.text_area("Project description / summary", value=project.get("description", ""))
                     save_edit = st.form_submit_button("Save changes", type="primary")
                 if save_edit:
-                    fields = {"project_name": edited_name.strip(), "city": edited_city.strip(), "estimated_value": edited_value.strip(), "description": edited_description.strip()}
+                    fields = {"project_name": edited_name.strip(), "estimated_value": edited_value.strip(), "description": edited_description.strip()}
                     try:
                         updated = db.update_builder_past_project(_current_account().get("id"), project_id, fields) if db.is_configured() else {**project, **fields}
                         if updated:
